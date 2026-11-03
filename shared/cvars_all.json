@@ -1,0 +1,3418 @@
+{
+"BlendBonesMode": {
+"default": "2",
+"help": null
+},
+"ai_LOS_mode": {
+"default": "0",
+"help": null
+},
+"ai_auto_contact_solver": {
+"default": "1",
+"help": null
+},
+"ai_block_damage": {
+"default": "0",
+"help": null
+},
+"ai_debug_assault": {
+"default": "0",
+"help": null
+},
+"ai_debug_avoidancebounds": {
+"default": "0",
+"help": null
+},
+"ai_debug_directnavprobe": {
+"default": "0",
+"help": null
+},
+"ai_debug_doors": {
+"default": "0",
+"help": null
+},
+"ai_debug_dyninteractions": {
+"default": "0",
+"help": "Debug the NPC dynamic interaction system."
+},
+"ai_debug_efficiency": {
+"default": "0",
+"help": null
+},
+"ai_debug_enemies": {
+"default": "0",
+"help": null
+},
+"ai_debug_expressions": {
+"default": "0",
+"help": "Show random expression decisions for NPCs."
+},
+"ai_debug_follow": {
+"default": "0",
+"help": null
+},
+"ai_debug_loners": {
+"default": "0",
+"help": null
+},
+"ai_debug_looktargets": {
+"default": "0",
+"help": null
+},
+"ai_debug_los": {
+"default": "0",
+"help": "NPC Line-Of-Sight debug mode. If 1, solid entities that block NPC LOC will be highlighted with white bounding boxes. If 2, it\\'ll show non-solid entities that would do it if they were solid."
+},
+"ai_debug_nav": {
+"default": "0",
+"help": null
+},
+"ai_debug_ragdoll_magnets": {
+"default": "0",
+"help": null
+},
+"ai_debug_shoot_positions": {
+"default": "0",
+"help": null
+},
+"ai_debug_speech": {
+"default": "0",
+"help": null
+},
+"ai_debug_squads": {
+"default": "0",
+"help": null
+},
+"ai_debug_think_ticks": {
+"default": "0",
+"help": null
+},
+"ai_debugscriptconditions": {
+"default": "0",
+"help": null
+},
+"ai_default_efficient": {
+"default": "0",
+"help": null
+},
+"ai_drawbattlelines": {
+"default": "0",
+"help": null
+},
+"ai_efficiency_override": {
+"default": "0",
+"help": null
+},
+"ai_enable_fear_behavior": {
+"default": "1",
+"help": null
+},
+"ai_expression_frametime": {
+"default": "0.05",
+"help": "Maximum frametime to still play background expressions."
+},
+"ai_expression_optimization": {
+"default": "0",
+"help": "Disable npc background expressions when you can\\'t see them."
+},
+"ai_fear_player_dist": {
+"default": "720",
+"help": null
+},
+"ai_find_lateral_cover": {
+"default": "1",
+"help": null
+},
+"ai_find_lateral_los": {
+"default": "1",
+"help": null
+},
+"ai_follow_use_points": {
+"default": "1",
+"help": null
+},
+"ai_follow_use_points_when_moving": {
+"default": "1",
+"help": null
+},
+"ai_force_serverside_ragdoll": {
+"default": "0",
+"help": null
+},
+"ai_frametime_limit": {
+"default": "50",
+"help": "frametime limit for min efficiency AIE_NORMAL (in sec\\'s)."
+},
+"ai_lead_time": {
+"default": "0.0",
+"help": null
+},
+"ai_moveprobe_debug": {
+"default": "0",
+"help": null
+},
+"ai_moveprobe_jump_debug": {
+"default": "0",
+"help": null
+},
+"ai_moveprobe_usetracelist": {
+"default": "0",
+"help": null
+},
+"ai_nav_debug_experimental_pathing": {
+"default": "0",
+"help": "Draw paths tried during search for bodysnatcher pathing"
+},
+"ai_navigator_generate_spikes": {
+"default": "0",
+"help": null
+},
+"ai_navigator_generate_spikes_strength": {
+"default": "8",
+"help": null
+},
+"ai_no_local_paths": {
+"default": "0",
+"help": null
+},
+"ai_no_node_cache": {
+"default": "0",
+"help": null
+},
+"ai_no_select_box": {
+"default": "0",
+"help": null
+},
+"ai_no_steer": {
+"default": "0",
+"help": null
+},
+"ai_no_talk_delay": {
+"default": "0",
+"help": null
+},
+"ai_norebuildgraph": {
+"default": "0",
+"help": null
+},
+"ai_path_adjust_speed_on_immediate_turns": {
+"default": "1",
+"help": null
+},
+"ai_path_insert_pause_at_est_end": {
+"default": "1",
+"help": null
+},
+"ai_path_insert_pause_at_obstruction": {
+"default": "1",
+"help": null
+},
+"ai_post_frame_navigation": {
+"default": "0",
+"help": null
+},
+"ai_radial_max_link_dist": {
+"default": "512",
+"help": null
+},
+"ai_reaction_delay_alert": {
+"default": "0.1",
+"help": null
+},
+"ai_reaction_delay_idle": {
+"default": "0.3",
+"help": null
+},
+"ai_rebalance_thinks": {
+"default": "1",
+"help": null
+},
+"ai_report_task_timings_on_limit": {
+"default": "0",
+"help": null
+},
+"ai_sequence_debug": {
+"default": "0",
+"help": null
+},
+"ai_setupbones_debug": {
+"default": "0",
+"help": "Shows that bones that are setup every think"
+},
+"ai_shot_bias": {
+"default": "1.0",
+"help": null
+},
+"ai_shot_bias_max": {
+"default": "1.0",
+"help": null
+},
+"ai_shot_bias_min": {
+"default": "-1.0",
+"help": null
+},
+"ai_shot_stats": {
+"default": "0",
+"help": null
+},
+"ai_shot_stats_term": {
+"default": "1000",
+"help": null
+},
+"ai_show_hull_attacks": {
+"default": "0",
+"help": null
+},
+"ai_show_think_tolerance": {
+"default": "0",
+"help": null
+},
+"ai_simulate_task_overtime": {
+"default": "0",
+"help": null
+},
+"ai_spread_cone_focus_time": {
+"default": "0.6",
+"help": null
+},
+"ai_spread_defocused_cone_multiplier": {
+"default": "3.0",
+"help": null
+},
+"ai_spread_pattern_focus_time": {
+"default": "0.8",
+"help": null
+},
+"ai_strong_optimizations": {
+"default": "0",
+"help": null
+},
+"ai_strong_optimizations_no_checkstand": {
+"default": "0",
+"help": null
+},
+"ai_task_pre_script": {
+"default": "0",
+"help": null
+},
+"ai_test_moveprobe_ignoresmall": {
+"default": "0",
+"help": null
+},
+"ai_think_limit_label": {
+"default": "0",
+"help": null
+},
+"ai_use_clipped_paths": {
+"default": "1",
+"help": null
+},
+"ai_use_efficiency": {
+"default": "1",
+"help": null
+},
+"ai_use_frame_think_limits": {
+"default": "1",
+"help": null
+},
+"ai_use_think_optimizations": {
+"default": "1",
+"help": null
+},
+"ai_use_visibility_cache": {
+"default": "1",
+"help": null
+},
+"ai_vehicle_avoidance": {
+"default": "1",
+"help": null
+},
+"anim_3wayblend": {
+"default": "1",
+"help": "Toggle the 3-way animation blending code."
+},
+"anim_twistbones_enabled": {
+"default": "1",
+"help": "Enable procedural twist bones."
+},
+"autoaim_max_deflect": {
+"default": "0.99",
+"help": null
+},
+"autoaim_max_dist": {
+"default": "2160",
+"help": null
+},
+"autoaim_viewing_client": {
+"default": "1",
+"help": null
+},
+"bb_air_drag": {
+"default": "0.96",
+"help": "Percentage of velocity to retain in air."
+},
+"bb_air_juggle_reduction": {
+"default": "0.7",
+"help": null
+},
+"bb_air_max_land_momentum": {
+"default": "200.0",
+"help": "Max XY speed kept when landing from an air attack."
+},
+"bb_air_stance_height_min": {
+"default": "35",
+"help": null
+},
+"bb_air_stun_lock": {
+"default": "1.2",
+"help": null
+},
+"bb_animmovement_attack_acceleration": {
+"default": "8.0",
+"help": null
+},
+"bb_anticheat_speedhack_check_enabled": {
+"default": "0",
+"help": ""
+},
+"bb_banlist_enable": {
+"default": "1",
+"help": "Enables the global ban list on this server."
+},
+"bb_block_break_air_time": {
+"default": "0.1",
+"help": "How quickly block recovers from air attacks."
+},
+"bb_block_break_balanced_time": {
+"default": "0.1",
+"help": "How quickly block recovers from balanced attacks."
+},
+"bb_block_break_fast_time": {
+"default": "0.0",
+"help": "How quickly block recovers from fast attacks."
+},
+"bb_block_break_heavy_time": {
+"default": "0.25",
+"help": "How quickly block recovers from heavy attacks."
+},
+"bb_block_chipdamage": {
+"default": "2",
+"help": "How much damage to take when blocking."
+},
+"bb_block_dotproduct": {
+"default": "0.49",
+"help": "Dot product angle at which block is effective."
+},
+"bb_block_interruption": {
+"default": "1",
+"help": "Turn to 0 for non interrupt block type."
+},
+"bb_block_post_attack_cooldown": {
+"default": "0.15",
+"help": "How long to disable block after attacking."
+},
+"bb_bot_debug_shove_in_duel": {
+"default": "-1",
+"help": null
+},
+"bb_charge_anim_fade": {
+"default": "0.1",
+"help": "Amount of time for the charge animation to fade in or out"
+},
+"bb_charge_string_multiplier": {
+"default": "0.8",
+"help": null
+},
+"bb_charge_tier2_time": {
+"default": "1.1",
+"help": null
+},
+"bb_charge_tier3_time": {
+"default": "2.5",
+"help": null
+},
+"bb_chargeaccel_acceleration": {
+"default": "0.4",
+"help": "How quickly to reach peak speed when charging."
+},
+"bb_chargeaccel_charge_multiplier": {
+"default": "2.5",
+"help": "How much of the charge time is applied to speed bonus."
+},
+"bb_chargeaccel_dampen": {
+"default": "0.25",
+"help": "How much normal movement is clipped when charging."
+},
+"bb_chargeaccel_initialspeed": {
+"default": "2.0",
+"help": "When charging what is the initial wish speed."
+},
+"bb_chargeaccel_maxspeed": {
+"default": "260",
+"help": "Fastest speed charge can take you."
+},
+"bb_combo_min_hits": {
+"default": "2",
+"help": null
+},
+"bb_combo_reset_time": {
+"default": "2.5",
+"help": "Time it takes until the combo count resets itself."
+},
+"bb_combo_scaling_attacker_push": {
+"default": "100",
+"help": "How much velocity to push the attacker away by, multiplied by each attack after going over the bb_combo_scaling_attacks limit"
+},
+"bb_combo_scaling_attacker_push_max": {
+"default": "350",
+"help": "Limit of attacker push away."
+},
+"bb_combo_scaling_attacks": {
+"default": "1",
+"help": "Number of attacks ignored before combo scaling takes effect (multi-hits aren\\'t counted)"
+},
+"bb_combo_scaling_damage": {
+"default": "0.15",
+"help": "Percent to decrease damage by, per attack, when scaling for combos (0.1 = 10%)"
+},
+"bb_combo_scaling_damage_minimum": {
+"default": "0.33",
+"help": "Minimum percent damage can be scaled down to via combo scaling"
+},
+"bb_combo_scaling_knockback": {
+"default": "0.15",
+"help": "Percent to increase knockback by, per attack, when scaling for combos (0.1 = 10%)"
+},
+"bb_combo_scaling_time": {
+"default": "1.0",
+"help": "Amount of time it takes for combo scaling to reset after taking an initial hit"
+},
+"bb_damage_tier2": {
+"default": "1.3",
+"help": "Damage multiplier for tier 2."
+},
+"bb_damage_tier3": {
+"default": "1.5",
+"help": "Damage multiplier for tier 3."
+},
+"bb_dash_damage_multiplier": {
+"default": "1.5",
+"help": "How much extra damage to take after dashing."
+},
+"bb_dash_delay": {
+"default": "3.25",
+"help": "Enforce a delay between dash input"
+},
+"bb_debug_always_allow_loadout_change": {
+"default": "0",
+"help": null
+},
+"bb_debug_guard": {
+"default": "0",
+"help": null
+},
+"bb_debug_recovery": {
+"default": "0",
+"help": "Displays the amount of time recovery actions actually take."
+},
+"bb_debug_throwable": {
+"default": "0",
+"help": null
+},
+"bb_debug_throwable_mg": {
+"default": "0",
+"help": "Hax."
+},
+"bb_debug_tracer": {
+"default": "0",
+"help": null
+},
+"bb_debug_tracer_parry": {
+"default": "0",
+"help": "Draw debug boxes for box test."
+},
+"bb_debug_tracer_thrust": {
+"default": "0",
+"help": null
+},
+"bb_duelbots_num_bots": {
+"default": "6",
+"help": "Number of bots that should be spawned on Duel matches."
+},
+"bb_duelbots_proportional": {
+"default": "1",
+"help": "Remove bots as players join the server."
+},
+"bb_fall_max_duration": {
+"default": "2.0",
+"help": null
+},
+"bb_falldamage_scale": {
+"default": "1.0",
+"help": "Scales falling damage"
+},
+"bb_falldamage_velocity": {
+"default": "725",
+"help": "Minimum velocity to start applying falling damage"
+},
+"bb_feint_air_cancel_amount": {
+"default": "0.35",
+"help": "What percent of the animation should be played until cancel on air."
+},
+"bb_feint_cancel_amount": {
+"default": "0.35",
+"help": "What percent of the animation should be played until cancel on the ground."
+},
+"bb_feint_cooldown": {
+"default": "0.75",
+"help": "How quickly you can feint again."
+},
+"bb_feintcancel_cooldown": {
+"default": "1.0",
+"help": "How quickly you can feint cancel again."
+},
+"bb_force_bot_difficulty": {
+"default": "-1",
+"help": "0 - Dummy, 1 - Easy, 2 - Medium, 3 - Hard"
+},
+"bb_free_current_game_mode": {
+"default": "0",
+"help": null
+},
+"bb_free_current_game_mode_settings_0": {
+"default": "0",
+"help": null
+},
+"bb_free_current_game_mode_settings_1": {
+"default": "0",
+"help": null
+},
+"bb_free_current_game_mode_settings_2": {
+"default": "0",
+"help": null
+},
+"bb_free_current_game_mode_settings_3": {
+"default": "0",
+"help": null
+},
+"bb_free_pending_game_mode": {
+"default": "-1",
+"help": null
+},
+"bb_free_pending_game_mode_settings_0": {
+"default": "0",
+"help": null
+},
+"bb_free_pending_game_mode_settings_1": {
+"default": "0",
+"help": null
+},
+"bb_free_pending_game_mode_settings_2": {
+"default": "0",
+"help": null
+},
+"bb_free_pending_game_mode_settings_3": {
+"default": "0",
+"help": null
+},
+"bb_gamemode_override": {
+"default": "-1",
+"help": null
+},
+"bb_gamemode_override_temporary": {
+"default": "-1",
+"help": null
+},
+"bb_gamemode_vip_lastmantimer": {
+"default": "30",
+"help": null
+},
+"bb_gamemodedata_cp_allcapped": {
+"default": "-1",
+"help": null
+},
+"bb_gamemodedata_cp_bluetickets": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_cp_cpcount": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_cp_damagemod": {
+"default": "1.5",
+"help": null
+},
+"bb_gamemodedata_cp_isticketwin": {
+"default": "1",
+"help": null
+},
+"bb_gamemodedata_cp_maxrespawntimer": {
+"default": "10",
+"help": null
+},
+"bb_gamemodedata_cp_maxtickets": {
+"default": "40",
+"help": "Max tickets (used if map doesn\\'t have a value set)"
+},
+"bb_gamemodedata_cp_minrespawntimer": {
+"default": "3",
+"help": null
+},
+"bb_gamemodedata_cp_redtickets": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_cp_tickamount": {
+"default": "1",
+"help": null
+},
+"bb_gamemodedata_cp_tickettimer": {
+"default": "2",
+"help": null
+},
+"bb_gamemodedata_hero_currentfragcount": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_hero_currenthero": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_hero_currenttimemax": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_hero_deathcamtime": {
+"default": "4",
+"help": null
+},
+"bb_gamemodedata_hero_respawntime": {
+"default": "4",
+"help": null
+},
+"bb_gamemodedata_hero_rounddelay": {
+"default": "3",
+"help": null
+},
+"bb_gamemodedata_hero_selectiondelay": {
+"default": "1",
+"help": null
+},
+"bb_gamemodedata_team_bluewins": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_team_friendlyfire": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_team_gamestate": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_team_intermission": {
+"default": "15",
+"help": null
+},
+"bb_gamemodedata_team_redwins": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_team_rounds_swap": {
+"default": "3",
+"help": "Amount of rounds between team swaps (0 disables swapping)"
+},
+"bb_gamemodedata_team_roundtime": {
+"default": "500",
+"help": null
+},
+"bb_gamemodedata_team_roundtimer": {
+"default": "300",
+"help": null
+},
+"bb_gamemodedata_team_scorelimit": {
+"default": "5",
+"help": null
+},
+"bb_gamemodedata_team_spectatetimer": {
+"default": "2",
+"help": null
+},
+"bb_gamemodedata_vip_bluevip": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_vip_redvip": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_vip_revivepercent": {
+"default": "75",
+"help": null
+},
+"bb_gamemodedata_vip_showenemyvip": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_vip_vipwincondition": {
+"default": "0",
+"help": null
+},
+"bb_gamemodedata_winningteam": {
+"default": "-1",
+"help": null
+},
+"bb_global_damagescale": {
+"default": "1.0",
+"help": "Scales damages globally for gameplay testing."
+},
+"bb_global_kbscale": {
+"default": "1.0",
+"help": "Scales knockback globally for gameplay testing."
+},
+"bb_grab_break_bonus": {
+"default": "0.7",
+"help": "When breaking a grab, the bonus gained by the defender."
+},
+"bb_grab_break_window": {
+"default": "0.4",
+"help": "Amount of time right after being grabbed can you break out of it."
+},
+"bb_grab_delay": {
+"default": "0.1",
+"help": "Delay between starting grab action to the actual grab attempt"
+},
+"bb_grab_dot": {
+"default": "0.5",
+"help": "Min dot for grabbing an opponent."
+},
+"bb_grab_duration": {
+"default": "0.5",
+"help": "-1 for infinite duration."
+},
+"bb_grab_range": {
+"default": "40.0",
+"help": "Range for grabbing an opponent."
+},
+"bb_grapplinghook_fling_duration": {
+"default": "1.0",
+"help": null
+},
+"bb_grapplinghook_fly_duration": {
+"default": "0.05",
+"help": null
+},
+"bb_grapplinghook_gravity": {
+"default": "800.0",
+"help": null
+},
+"bb_grapplinghook_hang_distance": {
+"default": "150.0",
+"help": null
+},
+"bb_guard_delay": {
+"default": "0.15",
+"help": null
+},
+"bb_guard_hitstop": {
+"default": "0.15",
+"help": null
+},
+"bb_guard_knockback_balanced": {
+"default": "450",
+"help": null
+},
+"bb_guard_knockback_fast": {
+"default": "450",
+"help": null
+},
+"bb_guard_knockback_heavy": {
+"default": "450",
+"help": null
+},
+"bb_guard_obb_length": {
+"default": "65",
+"help": null
+},
+"bb_guard_obb_length_back": {
+"default": "15",
+"help": null
+},
+"bb_guard_obb_width": {
+"default": "15",
+"help": null
+},
+"bb_guard_recovery_balanced": {
+"default": "0.4",
+"help": null
+},
+"bb_guard_recovery_fast": {
+"default": "0.35",
+"help": null
+},
+"bb_guard_recovery_heavy": {
+"default": "0.55",
+"help": null
+},
+"bb_harmonious_jump": {
+"default": "0",
+"help": "New jumping behaviour"
+},
+"bb_hitstop_cooldown_time": {
+"default": "0.0",
+"help": "Cooldown between each bb_hitstop_time"
+},
+"bb_hitstop_enabled": {
+"default": "1",
+"help": ""
+},
+"bb_hitstop_multihit_time": {
+"default": "0.05",
+"help": "Override bb_hitstop_time for multihits with this value if it\\'s above 0"
+},
+"bb_hitstop_override": {
+"default": "0",
+"help": null
+},
+"bb_hitstop_time": {
+"default": "0.12",
+"help": "Amount of time hitstop pauses for (multiplied a bit based on tier etc)"
+},
+"bb_hitstop_time_max": {
+"default": "0.6",
+"help": null
+},
+"bb_intercept_endtime": {
+"default": "0.2",
+"help": "How much time available for defense after intercept activates."
+},
+"bb_intercept_momentum_scale": {
+"default": "0.0",
+"help": "Multiplier for attacker\\'s momentum during intercept."
+},
+"bb_intercept_time": {
+"default": "0.2",
+"help": "Lock time when successfully doing a Jian intercept."
+},
+"bb_intercept_warmup": {
+"default": "0.0",
+"help": "How much time there needs to be before intercept defense activates."
+},
+"bb_item_override": {
+"default": "0",
+"help": null
+},
+"bb_jump_punch": {
+"default": "210",
+"help": "Amount of velocity to impart when wasd is used while jumping."
+},
+"bb_jumpcooldown": {
+"default": "0.2",
+"help": "Cool down for jumping"
+},
+"bb_jumpforce": {
+"default": "420",
+"help": "Force for jumping, fully charged."
+},
+"bb_jumpgravity_blend_end": {
+"default": "0.8",
+"help": "end fraction of jump gravity scale"
+},
+"bb_jumpgravity_blend_peak": {
+"default": "0.6",
+"help": "peak fraction of jump gravity scale"
+},
+"bb_jumpgravity_blend_start": {
+"default": "0.0",
+"help": "start fraction of jump gravity scale"
+},
+"bb_jumpgravity_scale_end": {
+"default": "0.3",
+"help": "end amount of jump gravity scale"
+},
+"bb_jumpgravity_scale_peak_jump_pressed": {
+"default": "0.0",
+"help": "peak amount (IN_JUMP down) of jump gravity scale"
+},
+"bb_jumpgravity_scale_peak_jump_released": {
+"default": "0.3",
+"help": "peak amount (IN_JUMP not down) of jump gravity scale"
+},
+"bb_jumpgravity_scale_sharpness": {
+"default": "0.0",
+"help": "sharpness of jump gravity scale"
+},
+"bb_jumpgravity_scale_start": {
+"default": "0.9",
+"help": "start amount of jump gravity scale"
+},
+"bb_jumpgravity_time": {
+"default": "0.25",
+"help": "Duration for applying jump gravity manipulation"
+},
+"bb_kb_air_parry": {
+"default": "350.0",
+"help": "Force to knockback in air parries."
+},
+"bb_kb_air_parry_up": {
+"default": "0.4",
+"help": "How much up vector to knockback in air parries."
+},
+"bb_kb_block": {
+"default": "1.3",
+"help": "Multiplier for kb during regular block."
+},
+"bb_kb_flight_scale": {
+"default": "1.0",
+"help": null
+},
+"bb_kb_intercept": {
+"default": "0.1",
+"help": "Multiplier for kb during intercept."
+},
+"bb_kb_parry": {
+"default": "75",
+"help": "Multiplier for kb during parry."
+},
+"bb_kb_parry_keep_momentum": {
+"default": "1",
+"help": "Whether or not parries should maintain player momentum when calculating knockback."
+},
+"bb_kb_post_interrupt_jump_scale": {
+"default": "0.5",
+"help": "How much to scale velocity by during hitstun and jump."
+},
+"bb_kb_slam_scale": {
+"default": "2.0",
+"help": null
+},
+"bb_kick_debug": {
+"default": "0",
+"help": "Show debug box for kick tracehull"
+},
+"bb_kick_delay": {
+"default": "0.5",
+"help": "Delay before kick tracehull is active"
+},
+"bb_kick_range": {
+"default": "45",
+"help": "Kick range"
+},
+"bb_knockbackfromdamage": {
+"default": "0.025",
+"help": "Scale of damage translated into force.\\n"
+},
+"bb_lagcompensation_show": {
+"default": "0",
+"help": null
+},
+"bb_movement_disable": {
+"default": "0",
+"help": "Disable all movement."
+},
+"bb_movement_walkspeed_multiplier": {
+"default": "0.23",
+"help": null
+},
+"bb_multihit_stun": {
+"default": "1",
+"help": "Allow multihits to stun the enemy (if 0, only the first hit in an attack applies hitstun/interrupt)"
+},
+"bb_nocharge": {
+"default": "0",
+"help": null
+},
+"bb_override_item_definitions_locally": {
+"default": "0",
+"help": null
+},
+"bb_parry_unblockables": {
+"default": "1",
+"help": "Allows tier 3 to become parried."
+},
+"bb_passive_mode": {
+"default": "0",
+"help": "0 = No-one is passive, 1 = Everyone is fully passive, 2 = Only players not in duels are passive, 3 = Only players sitting down are passive."
+},
+"bb_player_softcollision_enable": {
+"default": "1",
+"help": "Toggles soft collisions on and off."
+},
+"bb_player_softcollision_strengthAccumulation": {
+"default": "30",
+"help": "Accumulated velocity for soft collisions."
+},
+"bb_player_softcollision_strengthAnim": {
+"default": "2000",
+"help": "Strength during animation move."
+},
+"bb_player_softcollision_strengthAttack": {
+"default": "3500",
+"help": "Strength during attacks."
+},
+"bb_player_softcollision_strengthNormal": {
+"default": "300",
+"help": "Strength during normal walkmove."
+},
+"bb_prevent_player_attacks": {
+"default": "0",
+"help": "If turned on, players won\\'t be able to attack."
+},
+"bb_queue_bot_discrimination": {
+"default": "1",
+"help": null
+},
+"bb_recovery_air": {
+"default": "0.4",
+"help": "Recovery time for getting hit in mid-air."
+},
+"bb_recovery_balanced_blocked": {
+"default": "1.0",
+"help": null
+},
+"bb_recovery_block": {
+"default": "0.4",
+"help": null
+},
+"bb_recovery_clean_block": {
+"default": "1.0",
+"help": null
+},
+"bb_recovery_fall": {
+"default": "1.8",
+"help": null
+},
+"bb_recovery_flight": {
+"default": "0.7",
+"help": "Recovery time for strikeout attacks."
+},
+"bb_recovery_heavy_blocked": {
+"default": "1.0",
+"help": null
+},
+"bb_recovery_hit_balanced": {
+"default": "0.5",
+"help": null
+},
+"bb_recovery_hit_fast": {
+"default": "0.4",
+"help": null
+},
+"bb_recovery_hit_heavy": {
+"default": "0.75",
+"help": null
+},
+"bb_recovery_hit_world": {
+"default": "0.6",
+"help": "Recovery time hitting world. Stop hurting the environment!"
+},
+"bb_recovery_intercept": {
+"default": "1.0",
+"help": "Recovery time for getting hit by jian intercept."
+},
+"bb_recovery_reverse_blocked": {
+"default": "1.0",
+"help": null
+},
+"bb_recovery_slam": {
+"default": "2.0",
+"help": "Recovery time for slam attacks."
+},
+"bb_recovery_tier_better": {
+"default": "0.25",
+"help": null
+},
+"bb_recovery_tier_normal": {
+"default": "0.6",
+"help": null
+},
+"bb_recovery_tier_worse": {
+"default": "1.0",
+"help": null
+},
+"bb_recovery_tracer_parry": {
+"default": "0.5",
+"help": null
+},
+"bb_recovery_unblockable": {
+"default": "1.0",
+"help": null
+},
+"bb_roll_air": {
+"default": "0",
+"help": "Enable roll while in the air"
+},
+"bb_roll_delay": {
+"default": "-1",
+"help": "Enforce a delay between roll input"
+},
+"bb_roll_delay_on_attack": {
+"default": "1",
+"help": "Makes attacking use up combat move cooldown."
+},
+"bb_roll_minimum_playbackrate": {
+"default": "0.9",
+"help": null
+},
+"bb_rollcancel_time": {
+"default": "0.55",
+"help": "Minimum time between pressing roll/dash and canceling out of it."
+},
+"bb_server_disable_sword_glows": {
+"default": "0",
+"help": null
+},
+"bb_sheathed_runspeed_multiplier": {
+"default": "1.5",
+"help": "Running while sheathed in CP game mode is scaled by this much."
+},
+"bb_sheathing_enable": {
+"default": "1",
+"help": null
+},
+"bb_shuffle_delay": {
+"default": "-1",
+"help": "Enforce a delay between shuffle input"
+},
+"bb_shuffle_evasion_time": {
+"default": "0.0f",
+"help": null
+},
+"bb_shuffle_minimum_playbackrate": {
+"default": "0.75",
+"help": null
+},
+"bb_shuffle_postattack_delay": {
+"default": "0.3",
+"help": "Enforce a delay between shuffle input right after attacking"
+},
+"bb_shufflecancel_time": {
+"default": "0.28",
+"help": "Minimum time between pressing shuffle and canceling out of it."
+},
+"bb_side_cancel_percent_air": {
+"default": "0.4",
+"help": "Amount of an attack that can be canceled when using the opposite direction side attack."
+},
+"bb_side_cancel_percent_balanced": {
+"default": "0.4",
+"help": "Amount of an attack that can be canceled when using the opposite direction side attack."
+},
+"bb_side_cancel_percent_fast": {
+"default": "0.6",
+"help": "Amount of an attack that can be canceled when using the opposite direction side attack."
+},
+"bb_side_cancel_percent_heavy": {
+"default": "0.15",
+"help": "Amount of an attack that can be canceled when using the opposite direction side attack."
+},
+"bb_stats_output": {
+"default": "0",
+"help": "When sending stats events to the server, logs the event to the console."
+},
+"bb_stats_output_file": {
+"default": "0",
+"help": "When sending stats events to the server, logs the event to LastStatsEvent.json."
+},
+"bb_stats_resend_threshold": {
+"default": "10.0",
+"help": ""
+},
+"bb_string_reset": {
+"default": "1",
+"help": "Whether or not the victim\\'s string resets on hit."
+},
+"bb_string_reset_time": {
+"default": "2.0",
+"help": "Maximum delay between swings to remain in-combo"
+},
+"bb_string_sideattack_advance": {
+"default": "1",
+"help": "Do side attacks advance string counter?"
+},
+"bb_tactical_server_override": {
+"default": "-1",
+"help": "-1 = player, 0 = arcade, 1 = tactical"
+},
+"bb_throw_damage": {
+"default": "25",
+"help": null
+},
+"bb_throwable_angular_speed": {
+"default": "5",
+"help": "Used to smooth trajectory path."
+},
+"bb_throwable_angular_speed_homing": {
+"default": "1",
+"help": "Used to smooth trajectory path while targeting."
+},
+"bb_throwable_arc_amount": {
+"default": "-0.4",
+"help": "Scales arc to fly along."
+},
+"bb_throwable_arc_amount_homing": {
+"default": "-0.2",
+"help": "Scales arc to fly along."
+},
+"bb_throwable_autoblock_dot_min": {
+"default": "-0.25",
+"help": "Min dot required for players to auto block a throwable weapon."
+},
+"bb_throwable_block_or_parry_dot_min": {
+"default": "-0.5",
+"help": "Min dot required for manual block via parry or block action."
+},
+"bb_throwable_cancelable": {
+"default": "1",
+"help": "Allows throwable weapons to be canceled if button not held."
+},
+"bb_throwable_cancelable_min_time": {
+"default": "0.8",
+"help": "Throwable weapon can only be cancelable after this much time."
+},
+"bb_throwable_damage_player": {
+"default": "25",
+"help": "Damage dealt to players that have not been blocked."
+},
+"bb_throwable_delay": {
+"default": "0.4",
+"help": "Time it takes until you can throw a weapon again."
+},
+"bb_throwable_gravity": {
+"default": "80",
+"help": "Amount of gravity to apply after a certain distance if not targeting."
+},
+"bb_throwable_interrupt_on_hit": {
+"default": "1",
+"help": "Whether or not throwable weapon causes interrupt on hit."
+},
+"bb_throwable_life_duration": {
+"default": "10",
+"help": "Time to keep alive after impact."
+},
+"bb_throwable_phys_force": {
+"default": "80",
+"help": "Force to apply to phys objects."
+},
+"bb_throwable_pitch_offset": {
+"default": "7",
+"help": "Non-targeting pitch angle offset."
+},
+"bb_throwable_random_amount": {
+"default": "10",
+"help": "Randomizes destination position if not targeting."
+},
+"bb_throwable_spawn_delay": {
+"default": "0.9",
+"help": "How long after throw star action has started should star be created."
+},
+"bb_throwable_speed": {
+"default": "800",
+"help": "Speed of throwable weapons."
+},
+"bb_throwable_target_distance_max": {
+"default": "1024",
+"help": "Max distance for targeting to work."
+},
+"bb_throwable_target_dot_min_right": {
+"default": "0.7",
+"help": "Used to determine which players can be targeted."
+},
+"bb_throwable_target_dot_min_up": {
+"default": "0.5",
+"help": "Used to determine which players can be targeted."
+},
+"bb_timebetweenhits": {
+"default": "1.0",
+"help": null
+},
+"bb_tracer_default_grip_offset": {
+"default": "0",
+"help": "Distance from sword_grip bone to inner tracer point."
+},
+"bb_tracer_default_length": {
+"default": "40",
+"help": "How far down the sword grip does the tracer go."
+},
+"bb_tracer_fade_speed": {
+"default": "10",
+"help": "Fade speed used after tracer script finished."
+},
+"bb_tracer_max_hit_tests": {
+"default": "1",
+"help": "# of points to be used for damage traces, begin at tail."
+},
+"bb_tracer_parry_bloat_fwd": {
+"default": "10",
+"help": "Extends tracer parry obb along fwd."
+},
+"bb_tracer_parry_bloat_side": {
+"default": "5",
+"help": "Extends tracer parry obb along its sides."
+},
+"bb_tracer_parry_bloat_up": {
+"default": "15",
+"help": "Extends tracer parry obb upwards."
+},
+"bb_tracer_parry_damage_multiplier": {
+"default": "1.0",
+"help": "Damage multiplier for player who lost a tracer vs tracer resolution."
+},
+"bb_tracer_parry_enabled": {
+"default": "1",
+"help": "Enable tracer block."
+},
+"bb_tracer_parry_extension_duration": {
+"default": "0.15",
+"help": ""
+},
+"bb_tracer_parry_extension_enabled": {
+"default": "1",
+"help": ""
+},
+"bb_tracer_parry_new": {
+"default": "1",
+"help": "Use new parry collision system."
+},
+"bb_tracer_pitchaiming_enable": {
+"default": "1",
+"help": null
+},
+"bb_tracer_pitchaiming_max": {
+"default": "40",
+"help": null
+},
+"bb_tracer_pitchaiming_min": {
+"default": "-60",
+"help": null
+},
+"bb_tracer_pitchaiming_scale": {
+"default": "1",
+"help": null
+},
+"bb_tracer_player_new": {
+"default": "1",
+"help": "Use new player/world collision system."
+},
+"bb_tracer_thickness": {
+"default": "1",
+"help": "How fat are these tracer tests."
+},
+"bb_tracer_thrust_steps": {
+"default": "2",
+"help": "Amount of steps taken into account for movement direction check"
+},
+"bb_tracer_world_interrupt_enabled": {
+"default": "1",
+"help": "Enable tracer world interrupt."
+},
+"bb_tracerrecord_playbackrate": {
+"default": "0.1",
+"help": null
+},
+"bb_tracerrecord_step_min_dist": {
+"default": "3",
+"help": null
+},
+"bb_turnanimation_attack_angle": {
+"default": "60",
+"help": "Degrees to turn when taking damage and being struck by left/right."
+},
+"bb_turnanimation_parry_angle": {
+"default": "60",
+"help": "Degrees to turn when tracer parried."
+},
+"bb_turnrate_attack_duration": {
+"default": "0.0",
+"help": null
+},
+"bb_turnrate_attack_speed": {
+"default": "150",
+"help": null
+},
+"bb_turnrate_parry_defensive_duration": {
+"default": "1",
+"help": null
+},
+"bb_turnrate_parry_defensive_speed": {
+"default": "50",
+"help": null
+},
+"bb_turnrate_parry_offensive_duration": {
+"default": "1",
+"help": null
+},
+"bb_turnrate_parry_offensive_speed": {
+"default": "50",
+"help": null
+},
+"bb_tutorial_data_can_change_stances": {
+"default": "1",
+"help": null
+},
+"bb_tutorial_foil": {
+"default": "22",
+"help": null
+},
+"bb_tutorial_jian": {
+"default": "14",
+"help": null
+},
+"bb_tutorial_katana": {
+"default": "6",
+"help": null
+},
+"bb_tutorial_longsword": {
+"default": "2",
+"help": null
+},
+"bb_tutorial_scimitar": {
+"default": "16",
+"help": null
+},
+"bb_tutorial_start_chapter": {
+"default": "0",
+"help": null
+},
+"bb_vote_cooldown": {
+"default": "3.5",
+"help": null
+},
+"bb_vote_delay": {
+"default": "15",
+"help": null
+},
+"bb_vote_duration": {
+"default": "20",
+"help": null
+},
+"bb_vote_gamemode_enable": {
+"default": "1",
+"help": "Enable/disable voting"
+},
+"bb_vote_kick_bantime": {
+"default": "5",
+"help": ""
+},
+"bb_vote_kick_enable": {
+"default": "1",
+"help": "Enable/disable voting"
+},
+"bb_vote_kick_required_percentage": {
+"default": "0.6",
+"help": "Minimum amount of positive votes required"
+},
+"bb_vote_map_enable": {
+"default": "1",
+"help": "Enable/disable voting map"
+},
+"bb_vote_required_percentage": {
+"default": "0.65",
+"help": "Minimum amount of positive votes required"
+},
+"bb_vox_debug": {
+"default": "0",
+"help": null
+},
+"bb_wallclimb_flip_dot_max": {
+"default": "0.4",
+"help": "Minmimum dot product to automatically trigger flipping off the wall."
+},
+"bb_wallclimb_min_dot": {
+"default": "0.55",
+"help": "Minmimum dot product to allow climbing on."
+},
+"bb_wallclimb_min_height": {
+"default": "32",
+"help": "Minmimum height to trigger wall climbing."
+},
+"bb_walljump_delay": {
+"default": "0.7",
+"help": "Enforce a after wall jump"
+},
+"bb_walljump_delay_vault": {
+"default": "1.2",
+"help": "Enforce a after wall jump"
+},
+"bb_walljump_impulse_xy_from_input_scale": {
+"default": "0.5",
+"help": null
+},
+"bb_walljump_impulse_xy_max": {
+"default": "240",
+"help": null
+},
+"bb_walljump_impulse_xy_min": {
+"default": "100",
+"help": null
+},
+"bb_walljump_impulse_z_max": {
+"default": "400",
+"help": null
+},
+"bb_walljump_impulse_z_min": {
+"default": "80",
+"help": null
+},
+"bb_walljump_max_inherited_xy_velocity": {
+"default": "300",
+"help": null
+},
+"bb_walljump_max_inherited_z_velocity": {
+"default": "100",
+"help": null
+},
+"bb_wallslide_impulse_xy": {
+"default": "300",
+"help": null
+},
+"bb_wallslide_impulse_xy_from_input_scale": {
+"default": "2.0",
+"help": null
+},
+"bb_wallslide_impulse_z": {
+"default": "500",
+"help": null
+},
+"bb_wallslide_velocity": {
+"default": "1800",
+"help": null
+},
+"bot_actiondir": {
+"default": "-1",
+"help": "Sets the direction the bot actions. -1 = Do nothing, 0 = forwards, 1 = left, 2 = right"
+},
+"bot_announce_parry": {
+"default": "0",
+"help": "Bot will announce to players when to parry him. 1 for tier 1, 2 for tier 2, 3 for tier 3."
+},
+"bot_arcade": {
+"default": "1",
+"help": "Set whether the bot will default to arcade mode or not."
+},
+"bot_attack": {
+"default": "0",
+"help": "Slash!"
+},
+"bot_attack_direction": {
+"default": "-1",
+"help": ""
+},
+"bot_attack_random_directions": {
+"default": "0",
+"help": "Makes the bot pick a new random direction every time he attacks."
+},
+"bot_attack_random_tiers": {
+"default": "0",
+"help": "Makes the bot pick a random tier every time he attacks."
+},
+"bot_attack_wait": {
+"default": "0",
+"help": "Bot will wait this long between attacks."
+},
+"bot_avoidance": {
+"default": "0",
+"help": "Enable player avoidance for bots. Requires bb_player_softcollision."
+},
+"bot_block": {
+"default": "0",
+"help": "Forces the bot to be blocking."
+},
+"bot_bow": {
+"default": "0",
+"help": "Bow!"
+},
+"bot_catch_testing": {
+"default": "0",
+"help": null
+},
+"bot_catch_testing_attack_distsance": {
+"default": "55",
+"help": null
+},
+"bot_changeclass": {
+"default": "0",
+"help": "Force all bots to change to the specified class."
+},
+"bot_dash": {
+"default": "0",
+"help": "Dash!"
+},
+"bot_debug_targets": {
+"default": "0",
+"help": "Shows the bot\\'s look-at target."
+},
+"bot_defend": {
+"default": "0",
+"help": "Bot will block and parry when attacked."
+},
+"bot_face_nearest": {
+"default": "0",
+"help": "Forces bots to always face the nearest player."
+},
+"bot_ffa_duel": {
+"default": "0",
+"help": null
+},
+"bot_flipout": {
+"default": "0",
+"help": "When on, all bots fire their guns."
+},
+"bot_flourish": {
+"default": "0",
+"help": "Flourish!"
+},
+"bot_force_stance": {
+"default": "-1",
+"help": "Forces the bot use a stance regardless of mimic."
+},
+"bot_forceattack2": {
+"default": "0",
+"help": "When firing, use attack2."
+},
+"bot_forceattackon": {
+"default": "0",
+"help": "When firing, don\\'t tap fire, hold it down."
+},
+"bot_forcefireweapon": {
+"default": "",
+"help": "Force bots with the specified weapon to fire."
+},
+"bot_forwardmove": {
+"default": "0",
+"help": "Positive values to make bot walk forward, negative to go backwards."
+},
+"bot_grab": {
+"default": "0",
+"help": ""
+},
+"bot_jump": {
+"default": "0",
+"help": ""
+},
+"bot_kneeling_stand_up": {
+"default": "0",
+"help": ""
+},
+"bot_maintain_distance": {
+"default": "-1",
+"help": "Sets a distance for the bot to maintain away from his opponent. Used in conjunction with bot_face_nearest 1"
+},
+"bot_maintain_distance_exact": {
+"default": "-1",
+"help": null
+},
+"bot_maintain_jump": {
+"default": "-1",
+"help": "Forces the bot to jump when player is above it.\\n"
+},
+"bot_mimic": {
+"default": "0",
+"help": "Bot uses usercmd of player by index."
+},
+"bot_mimic_yaw_offset": {
+"default": "180",
+"help": "Offsets the bot yaw."
+},
+"bot_name": {
+"default": "0",
+"help": "Change next bot\\'s name"
+},
+"bot_parry_last_attack": {
+"default": "0",
+"help": "Bot will only parry the last attempted direction from player."
+},
+"bot_predict_player_movement": {
+"default": "0",
+"help": null
+},
+"bot_random_actions": {
+"default": "0",
+"help": "Have the bots do random actions."
+},
+"bot_random_stance": {
+"default": "0",
+"help": ""
+},
+"bot_say": {
+"default": "",
+"help": "Make a bot say stuff."
+},
+"bot_sendcmd": {
+"default": "",
+"help": "Forces bots to send the specified command."
+},
+"bot_shuffle": {
+"default": "0",
+"help": "Shuffle!"
+},
+"bot_sidemove": {
+"default": "0",
+"help": "Positive values to make bot strafe right, negative strafe left."
+},
+"bot_stance": {
+"default": "-1",
+"help": "Forces the bot use a particular stance. Balanced, Reverse, Heavy in that order."
+},
+"bot_swordid": {
+"default": "",
+"help": "select sword by id"
+},
+"bot_swordtype": {
+"default": "",
+"help": "select sword by swordtype"
+},
+"bot_taunt": {
+"default": "0",
+"help": "Taunt!"
+},
+"bot_throw": {
+"default": "0",
+"help": null
+},
+"bot_tier_attack": {
+"default": "0",
+"help": "Charge attacks to the specified tier, then... Slash!"
+},
+"bot_use_convar_actions": {
+"default": "1",
+"help": "Execute the bot ai that only follows the convar actions."
+},
+"breakable_disable_gib_limit": {
+"default": "0",
+"help": null
+},
+"breakable_multiplayer": {
+"default": "1",
+"help": null
+},
+"cc_norepeat": {
+"default": "5",
+"help": "In multiplayer games, don\\'t repeat captions more often than this many seconds."
+},
+"cc_showmissing": {
+"default": "0",
+"help": "Show missing closecaption entries."
+},
+"chet_debug_idle": {
+"default": "0",
+"help": "If set one, many debug prints to help track down the TLK_IDLE issue. Set two for super verbose info"
+},
+"choreo_spew_filter": {
+"default": "",
+"help": "Spew choreo. Use a sub-string or * to display all events."
+},
+"cl_csm_auto_entity": {
+"default": "1",
+"help": ""
+},
+"cl_simdbones": {
+"default": "0",
+"help": "Use SIMD bone setup."
+},
+"cl_use_simd_bones": {
+"default": "1",
+"help": "1 use SIMD bones 0 use scalar bones."
+},
+"collision_shake_amp": {
+"default": "0.2",
+"help": null
+},
+"collision_shake_freq": {
+"default": "0.5",
+"help": null
+},
+"collision_shake_time": {
+"default": "0.5",
+"help": null
+},
+"commentary": {
+"default": "0",
+"help": "Desired commentary mode state."
+},
+"commentary_available": {
+"default": "0",
+"help": "Automatically set by the game when a commentary file is available for the current map."
+},
+"debug_dispatch_server_dump": {
+"default": "0",
+"help": null
+},
+"debug_materialmodifycontrol": {
+"default": "0",
+"help": null
+},
+"debug_overlay_fullposition": {
+"default": "0",
+"help": null
+},
+"debug_physimpact": {
+"default": "0",
+"help": null
+},
+"debug_touchlinks": {
+"default": "0",
+"help": "Spew touch link activity"
+},
+"debug_visibility_monitor": {
+"default": "0",
+"help": null
+},
+"developer": {
+"default": "0",
+"help": "Set developer message level"
+},
+"dispcoll_drawplane": {
+"default": "0",
+"help": null
+},
+"displaysoundlist": {
+"default": "0",
+"help": null
+},
+"ent_debugkeys": {
+"default": "",
+"help": null
+},
+"ent_messages_draw": {
+"default": "0",
+"help": "Visualizes all entity input/output activity."
+},
+"ent_show_contexts": {
+"default": "0",
+"help": "Show entity contexts in ent_text display"
+},
+"fire_absorbrate": {
+"default": "3",
+"help": null
+},
+"fire_dmgbase": {
+"default": "1",
+"help": null
+},
+"fire_dmginterval": {
+"default": "1.0",
+"help": null
+},
+"fire_dmgscale": {
+"default": "0.1",
+"help": null
+},
+"fire_extabsorb": {
+"default": "5",
+"help": null
+},
+"fire_extscale": {
+"default": "12",
+"help": null
+},
+"fire_growthrate": {
+"default": "1.0",
+"help": null
+},
+"fire_heatscale": {
+"default": "1.0",
+"help": null
+},
+"fire_incomingheatscale": {
+"default": "0.1",
+"help": null
+},
+"fire_maxabsorb": {
+"default": "50",
+"help": null
+},
+"fish_dormant": {
+"default": "0",
+"help": "Turns off interactive fish behavior. Fish become immobile and unresponsive."
+},
+"flex_expression": {
+"default": "-",
+"help": null
+},
+"flex_looktime": {
+"default": "5",
+"help": null
+},
+"flex_maxawaytime": {
+"default": "1.0",
+"help": null
+},
+"flex_maxplayertime": {
+"default": "7",
+"help": null
+},
+"flex_minawaytime": {
+"default": "0.5",
+"help": null
+},
+"flex_minplayertime": {
+"default": "5",
+"help": null
+},
+"flex_talk": {
+"default": "0",
+"help": null
+},
+"fog_volume_debug": {
+"default": "0",
+"help": "If enabled, prints diagnostic information about the current fog volume"
+},
+"free_pass_peek_debug": {
+"default": "0",
+"help": null
+},
+"func_break_max_pieces": {
+"default": "15",
+"help": null
+},
+"func_break_reduction_factor": {
+"default": ".5",
+"help": null
+},
+"func_breakdmg_bullet": {
+"default": "0.5",
+"help": null
+},
+"func_breakdmg_club": {
+"default": "1.5",
+"help": null
+},
+"func_breakdmg_explosive": {
+"default": "1.25",
+"help": null
+},
+"fx_new_sparks": {
+"default": "1",
+"help": "Use new style sparks.\\n"
+},
+"g_Language": {
+"default": "0",
+"help": null
+},
+"g_ai_threadedgraphbuild": {
+"default": "0",
+"help": "If true, use experimental threaded node graph building."
+},
+"g_debug_angularsensor": {
+"default": "0",
+"help": null
+},
+"g_debug_constraint_sounds": {
+"default": "0",
+"help": "Enable debug printing about constraint sounds."
+},
+"g_debug_doors": {
+"default": "0",
+"help": null
+},
+"g_debug_npc_vehicle_roles": {
+"default": "0",
+"help": null
+},
+"g_debug_ragdoll_removal": {
+"default": "0",
+"help": null
+},
+"g_debug_trackpather": {
+"default": "0",
+"help": null
+},
+"g_debug_transitions": {
+"default": "0",
+"help": "Set to 1 and restart the map to be warned if the map has no trigger_transition volumes. Set to 2 to see a dump of all entities & associated results during a transition."
+},
+"g_debug_vehiclebase": {
+"default": "0",
+"help": null
+},
+"g_debug_vehicledriver": {
+"default": "0",
+"help": null
+},
+"g_debug_vehicleexit": {
+"default": "0",
+"help": null
+},
+"g_debug_vehiclesound": {
+"default": "0",
+"help": null
+},
+"g_ragdoll_important_maxcount": {
+"default": "2",
+"help": null
+},
+"g_ragdoll_maxcount": {
+"default": "8",
+"help": null
+},
+"gamestats_file_output_directory": {
+"default": "",
+"help": "When -gamestatsfileoutputonly is specified, file will be emitted here instead of to modpath\\n"
+},
+"global_chatter_info": {
+"default": "",
+"help": "Map/mode-specific responserules criteria used by calls to UTIL_GlobalChatter"
+},
+"global_event_log_enabled": {
+"default": "0",
+"help": "Enables the global event log system"
+},
+"hl2_episodic": {
+"default": "0",
+"help": null
+},
+"hostfile": {
+"default": "host.txt",
+"help": "The HOST file to load."
+},
+"loopsingleplayermaps": {
+"default": "0",
+"help": null
+},
+"lservercfgfile": {
+"default": "listenserver.cfg",
+"help": null
+},
+"mapcycledisabled": {
+"default": "0",
+"help": "repeats the same map after each match instead of using the map cycle"
+},
+"mapcyclefile": {
+"default": "mapcycle.txt",
+"help": "Name of the .txt file used to cycle the maps on multiplayer servers "
+},
+"mod_load_preload": {
+"default": "1.0",
+"help": "Indicates how far ahead in seconds to preload animations."
+},
+"mod_load_showstall": {
+"default": "0",
+"help": "1 - show hitches , 2 - show stalls"
+},
+"mortar_visualize": {
+"default": "0",
+"help": null
+},
+"motdfile": {
+"default": "motd.txt",
+"help": "The MOTD file to load."
+},
+"mp_allowNPCs": {
+"default": "1",
+"help": null
+},
+"mp_allowspectators": {
+"default": "1.0",
+"help": "toggles whether the server allows spectator mode or not"
+},
+"mp_autocrosshair": {
+"default": "1",
+"help": null
+},
+"mp_buy_anywhere": {
+"default": "0",
+"help": "When set, players can buy anywhere, not only in buyzones. 0 = default. 1 = both teams. 2 = Terrorists. 3 = Counter-Terrorists."
+},
+"mp_buy_during_immunity": {
+"default": "0",
+"help": "When set, players can buy when immune, ignoring buytime. 0 = default. 1 = both teams. 2 = Terrorists. 3 = Counter-Terrorists."
+},
+"mp_clan_ready_signal": {
+"default": "ready",
+"help": "Text that team leader from each team must speak for the match to begin"
+},
+"mp_clan_readyrestart": {
+"default": "0",
+"help": "If non-zero, game will restart once someone from each team gives the ready signal"
+},
+"mp_defaultteam": {
+"default": "0",
+"help": null
+},
+"mp_facefronttime": {
+"default": "3",
+"help": "After this amount of time of standing in place but aiming to one side, go ahead and move feet to face upper body."
+},
+"mp_falldamage": {
+"default": "0",
+"help": null
+},
+"mp_feetyawrate": {
+"default": "720",
+"help": "How many degrees per second that we can turn our feet or upper body."
+},
+"mp_flashlight": {
+"default": "0",
+"help": null
+},
+"mp_footsteps": {
+"default": "1",
+"help": null
+},
+"mp_forcecamera": {
+"default": "1",
+"help": "Restricts spectator modes for dead players. 0 = Any team. 1 = Only own team. 2 = No one; fade to black on death (previously mp_fadetoblack)."
+},
+"mp_forcerespawn": {
+"default": "1",
+"help": null
+},
+"mp_fraglimit": {
+"default": "0",
+"help": "The number of kills at which the map ends"
+},
+"mp_friendlyfire": {
+"default": "0",
+"help": "Allows team members to injure other members of their team"
+},
+"mp_ik": {
+"default": "1",
+"help": "Use IK on in-place turns."
+},
+"mp_match_restart_delay": {
+"default": "15",
+"help": "Time (in seconds) until a match restarts."
+},
+"mp_radar_showall": {
+"default": "0",
+"help": "Determines who should see all. 0 = default. 1 = both teams. 2 = Terrorists. 3 = Counter-Terrorists."
+},
+"mp_restartgame": {
+"default": "0",
+"help": "If non-zero, game will restart in the specified number of seconds"
+},
+"mp_suicide_time": {
+"default": "5",
+"help": "Specifies number of seconds required to wait before another suicide."
+},
+"mp_teamlist": {
+"default": "hgrunt;scientist",
+"help": null
+},
+"mp_teammates_are_enemies": {
+"default": "0",
+"help": "When set, your teammates act as enemies and all players are valid targets."
+},
+"mp_teamoverride": {
+"default": "1",
+"help": null
+},
+"mp_teamplay": {
+"default": "0",
+"help": null
+},
+"mp_timelimit": {
+"default": "30",
+"help": "game time per map in minutes"
+},
+"mp_timelimit_free": {
+"default": "30",
+"help": "game time per map in minutes on non-duel maps"
+},
+"mp_waitingforplayers_cancel": {
+"default": "0",
+"help": "Set to 1 to end the WaitingForPlayers period."
+},
+"mp_waitingforplayers_restart": {
+"default": "0",
+"help": "Set to 1 to start or restart the WaitingForPlayers period."
+},
+"mp_waitingforplayers_time": {
+"default": "0",
+"help": "WaitingForPlayers time length in seconds"
+},
+"mp_weaponstay": {
+"default": "0",
+"help": null
+},
+"nav_area_bgcolor": {
+"default": "0 0 0 30",
+"help": "RGBA color to draw as the background color for nav areas while editing."
+},
+"nav_area_max_size": {
+"default": "50",
+"help": "Max area size created in nav generation"
+},
+"nav_coplanar_slope_limit": {
+"default": "0.99",
+"help": null
+},
+"nav_coplanar_slope_limit_displacement": {
+"default": "0.7",
+"help": null
+},
+"nav_corner_adjust_adjacent": {
+"default": "18",
+"help": "radius used to raise/lower corners in nearby areas when raising/lowering corners."
+},
+"nav_create_area_at_feet": {
+"default": "0",
+"help": "Anchor nav_begin_area Z to editing player\\'s feet"
+},
+"nav_create_place_on_ground": {
+"default": "0",
+"help": "If true, nav areas will be placed flush with the ground when created by hand."
+},
+"nav_debug_blocked": {
+"default": "0",
+"help": null
+},
+"nav_displacement_test": {
+"default": "10000",
+"help": "Checks for nodes embedded in displacements (useful for in-development maps)"
+},
+"nav_drag_selection_volume_zmax_offset": {
+"default": "32",
+"help": "The offset of the nav drag volume top from center"
+},
+"nav_drag_selection_volume_zmin_offset": {
+"default": "32",
+"help": "The offset of the nav drag volume bottom from center"
+},
+"nav_draw_limit": {
+"default": "500",
+"help": "The maximum number of areas to draw in edit mode"
+},
+"nav_edit": {
+"default": "0",
+"help": "Set to one to interactively edit the Navigation Mesh. Set to zero to leave edit mode."
+},
+"nav_generate_fencetops": {
+"default": "1",
+"help": "Autogenerate nav areas on fence and obstacle tops"
+},
+"nav_generate_fixup_jump_areas": {
+"default": "1",
+"help": "Convert obsolete jump areas into 2-way connections"
+},
+"nav_generate_incremental_range": {
+"default": "2000",
+"help": null
+},
+"nav_generate_incremental_tolerance": {
+"default": "0",
+"help": "Z tolerance for adding new nav areas."
+},
+"nav_max_view_distance": {
+"default": "0",
+"help": "Maximum range for precomputed nav mesh visibility (0 = default 1500 units)"
+},
+"nav_max_vis_delta_list_length": {
+"default": "64",
+"help": null
+},
+"nav_potentially_visible_dot_tolerance": {
+"default": "0.98",
+"help": null
+},
+"nav_quicksave": {
+"default": "1",
+"help": "Set to one to skip the time consuming phases of the analysis.  Useful for data collection and testing."
+},
+"nav_selected_set_border_color": {
+"default": "100 100 0 255",
+"help": "Color used to draw the selected set borders while editing."
+},
+"nav_selected_set_color": {
+"default": "255 255 200 96",
+"help": "Color used to draw the selected set background while editing."
+},
+"nav_show_approach_points": {
+"default": "0",
+"help": "Show Approach Points in the Navigation Mesh."
+},
+"nav_show_area_info": {
+"default": "0.5",
+"help": "Duration in seconds to show nav area ID and attributes while editing"
+},
+"nav_show_compass": {
+"default": "0",
+"help": null
+},
+"nav_show_continguous": {
+"default": "0",
+"help": "Highlight non-contiguous connections"
+},
+"nav_show_danger": {
+"default": "0",
+"help": "Show current \\'danger\\' levels."
+},
+"nav_show_light_intensity": {
+"default": "0",
+"help": null
+},
+"nav_show_node_grid": {
+"default": "0",
+"help": null
+},
+"nav_show_node_id": {
+"default": "0",
+"help": null
+},
+"nav_show_nodes": {
+"default": "0",
+"help": null
+},
+"nav_show_player_counts": {
+"default": "0",
+"help": "Show current player counts in each area."
+},
+"nav_show_potentially_visible": {
+"default": "0",
+"help": "Show areas that are potentially visible from the current nav area"
+},
+"nav_slope_limit": {
+"default": "0.7",
+"help": "The ground unit normal\\'s Z component must be greater than this for nav areas to be generated."
+},
+"nav_slope_tolerance": {
+"default": "0.1",
+"help": "The ground unit normal\\'s Z component must be this close to the nav area\\'s Z component to be generated."
+},
+"nav_snap_to_grid": {
+"default": "0",
+"help": "Snap to the nav generation grid when creating new nav areas"
+},
+"nav_solid_props": {
+"default": "0",
+"help": "Make props solid to nav generation/editing"
+},
+"nav_split_place_on_ground": {
+"default": "0",
+"help": "If true, nav areas will be placed flush with the ground when split."
+},
+"nav_test_node": {
+"default": "0",
+"help": null
+},
+"nav_test_node_crouch": {
+"default": "0",
+"help": null
+},
+"nav_test_node_crouch_dir": {
+"default": "4",
+"help": null
+},
+"nav_update_visibility_on_edit": {
+"default": "0",
+"help": "If nonzero editing the mesh will incrementally recompue visibility"
+},
+"nextlevel": {
+"default": "",
+"help": "If set to a valid map name, will change to this map during the next changelevel"
+},
+"nextmap_print_enabled": {
+"default": "0",
+"help": "When enabled prints next map to clients"
+},
+"noclip_fixup": {
+"default": "1",
+"help": null
+},
+"npc_ally_deathmessage": {
+"default": "1",
+"help": null
+},
+"npc_create_equipment": {
+"default": "",
+"help": null
+},
+"npc_go_do_run": {
+"default": "1",
+"help": "Set whether should run on NPC go"
+},
+"npc_height_adjust": {
+"default": "1",
+"help": "Enable test mode for ik height adjustment"
+},
+"npc_sentences": {
+"default": "0",
+"help": null
+},
+"npc_vphysics": {
+"default": "0",
+"help": null
+},
+"occlusion_test_camera_margins": {
+"default": "12",
+"help": "Amount by which the camera (viewer\\'s eye) is expanded for occlusion test. This should be large enough to accommodate eye\\'s movement within a frame or two"
+},
+"occlusion_test_jump_margin": {
+"default": "12",
+"help": "Amount by which the player bounding box is expanded up for occlusion test to account for jumping. This margin should be large enough to accommodate player movement within a frame or two. Affects both camera box and player box."
+},
+"occlusion_test_shadow_length": {
+"default": "144",
+"help": "Max length of completely occluded shadow to consider a player for occlusion test. If shadow provably stops at this distance, the player may be considered for occlusion test. For longer shadows, we just don\\'t do occlusion because we are not likely to find full occlusion when one of the boxes is expanded too much."
+},
+"old_radiusdamage": {
+"default": "0.0",
+"help": null
+},
+"panel_test_title_safe": {
+"default": "0",
+"help": "Test vgui panel positioning with title safe indentation"
+},
+"particle_test_attach_attachment": {
+"default": "0",
+"help": "Attachment index for attachment mode"
+},
+"particle_test_attach_mode": {
+"default": "follow_attachment",
+"help": "Possible Values: \\'start_at_attachment\\', \\'follow_attachment\\', \\'start_at_origin\\', \\'follow_origin\\'"
+},
+"particle_test_file": {
+"default": "",
+"help": "Name of the particle system to dynamically spawn"
+},
+"phys_debug_check_contacts": {
+"default": "0",
+"help": null
+},
+"phys_impactforcescale": {
+"default": "1.0",
+"help": null
+},
+"phys_penetration_error_time": {
+"default": "10",
+"help": "Controls the duration of vphysics penetration error boxes."
+},
+"phys_pushscale": {
+"default": "1",
+"help": null
+},
+"phys_show_active": {
+"default": "0",
+"help": null
+},
+"phys_speeds": {
+"default": "0",
+"help": null
+},
+"phys_stressbodyweights": {
+"default": "5.0",
+"help": null
+},
+"phys_timescale": {
+"default": "1",
+"help": "Scale time for physics"
+},
+"phys_upimpactforcescale": {
+"default": "0.375",
+"help": null
+},
+"physicsshadowupdate_render": {
+"default": "0",
+"help": null
+},
+"player_debug_print_damage": {
+"default": "0",
+"help": "When true, print amount and type of all damage received by player to console."
+},
+"player_old_armor": {
+"default": "0",
+"help": null
+},
+"prop_active_gib_limit": {
+"default": "64",
+"help": null
+},
+"prop_active_gib_max_fade_time": {
+"default": "12",
+"help": null
+},
+"prop_break_disable_float": {
+"default": "0",
+"help": null
+},
+"props_break_max_pieces": {
+"default": "-1",
+"help": "Maximum prop breakable piece count (-1 = model default)"
+},
+"props_break_max_pieces_perframe": {
+"default": "-1",
+"help": "Maximum prop breakable piece count per frame (-1 = model default)"
+},
+"pvs_min_player_distance": {
+"default": "1500",
+"help": "Min distance to player at which PVS is used. At closer distances, PVS assumes we can see a shadow or something else from the player, so it\\'s safer to just always be \\\"Visible\\\""
+},
+"r_AirboatViewDampenDamp": {
+"default": "1.0",
+"help": null
+},
+"r_AirboatViewDampenFreq": {
+"default": "7.0",
+"help": null
+},
+"r_AirboatViewZHeight": {
+"default": "0.0",
+"help": null
+},
+"r_JeepFOV": {
+"default": "90",
+"help": null
+},
+"r_JeepViewDampenDamp": {
+"default": "1.0",
+"help": null
+},
+"r_JeepViewDampenFreq": {
+"default": "7.0",
+"help": null
+},
+"r_JeepViewZHeight": {
+"default": "10.0",
+"help": null
+},
+"r_VehicleViewDampen": {
+"default": "1",
+"help": null
+},
+"r_particle_streaming": {
+"default": "0",
+"help": null
+},
+"r_vehicleBrakeRate": {
+"default": "1.5",
+"help": null
+},
+"r_visualizetraces": {
+"default": "0",
+"help": null
+},
+"rr_debug_qa": {
+"default": "0",
+"help": "Set to 1 to see debug related to the Question & Answer system used to create conversations between allied NPCs."
+},
+"rr_debugresponseconcept": {
+"default": "",
+"help": "If set, rr_debugresponses will print only responses testing for the specified concept"
+},
+"rr_debugresponses": {
+"default": "0",
+"help": "Show verbose matching output (1 for simple, 2 for rule scoring, 3 for noisy). If set to 4, it will only show response success/failure for npc_selected NPCs."
+},
+"rr_debugrule": {
+"default": "",
+"help": "If set to the name of the rule, that rule\\'s score will be shown whenever a concept is passed into the response rules system."
+},
+"rr_dumpresponses": {
+"default": "0",
+"help": "Dump all response_rules.txt and rules (requires restart)"
+},
+"rr_followup_maxdist": {
+"default": "1800",
+"help": "\\'then ANY\\' or \\'then ALL\\' response followups will be dispatched only to characters within this distance."
+},
+"rr_remarkable_max_distance": {
+"default": "1200",
+"help": "AIs will not even consider remarkarbles that are more than this many units away."
+},
+"rr_remarkable_world_entities_replay_limit": {
+"default": "1",
+"help": "TLK_REMARKs will be dispatched no more than this many times for any given info_remarkable"
+},
+"rr_remarkables_enabled": {
+"default": "0",
+"help": "If 1, polling for info_remarkables and issuances of TLK_REMARK is enabled."
+},
+"rr_thenany_score_slop": {
+"default": "0.0",
+"help": "When computing respondents for a \\'THEN ANY\\' rule, all rule-matching scores within this much of the best score will be considered."
+},
+"scene_async_prefetch_spew": {
+"default": "0",
+"help": "Display async .ani file loading info."
+},
+"scene_clamplookat": {
+"default": "1",
+"help": "Clamp head turns to a MAX of 20 degrees per think."
+},
+"scene_clientflex": {
+"default": "1",
+"help": "Do client side flex animation."
+},
+"scene_clientplayback": {
+"default": "1",
+"help": "Play all vcds on the clients."
+},
+"scene_flatturn": {
+"default": "1",
+"help": null
+},
+"scene_forcecombined": {
+"default": "0",
+"help": "When playing back, force use of combined .wav files even in english."
+},
+"scene_maxcaptionradius": {
+"default": "1200",
+"help": "Only show closed captions if recipient is within this many units of speaking actor (0==disabled)."
+},
+"scene_print": {
+"default": "0",
+"help": "When playing back a scene, print timing and event info to console."
+},
+"scene_showfaceto": {
+"default": "0",
+"help": "When playing back, show the directions of faceto events."
+},
+"scene_showlook": {
+"default": "0",
+"help": "When playing back, show the directions of look events."
+},
+"scene_showmoveto": {
+"default": "0",
+"help": "When moving, show the end location."
+},
+"scene_showunlock": {
+"default": "0",
+"help": "Show when a vcd is playing but normal AI is running."
+},
+"servercfgfile": {
+"default": "server.cfg",
+"help": null
+},
+"showhitlocation": {
+"default": "0",
+"help": null
+},
+"showtriggers": {
+"default": "0",
+"help": "Shows trigger brushes"
+},
+"sk_ally_regen_time": {
+"default": "0.3003",
+"help": "Time taken for an ally to regenerate a point of health."
+},
+"sk_autoaim_mode": {
+"default": "1",
+"help": null
+},
+"sk_npc_arm": {
+"default": "1",
+"help": null
+},
+"sk_npc_chest": {
+"default": "1",
+"help": null
+},
+"sk_npc_head": {
+"default": "2",
+"help": null
+},
+"sk_npc_leg": {
+"default": "1",
+"help": null
+},
+"sk_npc_stomach": {
+"default": "1",
+"help": null
+},
+"sk_player_arm": {
+"default": "1",
+"help": null
+},
+"sk_player_chest": {
+"default": "1",
+"help": null
+},
+"sk_player_head": {
+"default": "2",
+"help": null
+},
+"sk_player_leg": {
+"default": "1",
+"help": null
+},
+"sk_player_stomach": {
+"default": "1",
+"help": null
+},
+"sk_plr_dmg_grenade": {
+"default": "0",
+"help": null
+},
+"skill": {
+"default": "1",
+"help": null
+},
+"smoothstairs": {
+"default": "1",
+"help": "Smooth player eye z coordinate when traversing stairs."
+},
+"snd_prevent_ss_duplicates": {
+"default": "0",
+"help": "switch to en/disable the prevention of splitscreen audio file duplicates\\n"
+},
+"snd_sos_show_server_xmit": {
+"default": "0",
+"help": null
+},
+"soundpatch_captionlength": {
+"default": "2.0",
+"help": "How long looping soundpatch captions should display for."
+},
+"soundscape_debug": {
+"default": "0",
+"help": "When on, draws lines to all env_soundscape entities. Green lines show the active soundscape, red lines show soundscapes that aren\\'t in range, and white lines show soundscapes that are in range, but not the active soundscape."
+},
+"spec_freeze_time": {
+"default": "4.0",
+"help": "Time spend frozen in observer freeze cam."
+},
+"spec_freeze_traveltime": {
+"default": "0.4",
+"help": "Time taken to zoom in to frame a target in observer freeze cam."
+},
+"spec_replay_bot": {
+"default": "0",
+"help": "Enable Spectator Hltv Replay when killed by bot"
+},
+"spec_replay_cam_delay": {
+"default": "5",
+"help": "Hltv Replay delay in seconds"
+},
+"spec_replay_cam_options": {
+"default": "0",
+"help": "Debug options for replay cam"
+},
+"spec_replay_winddown_time": {
+"default": "2",
+"help": "The trailing time, in seconds, of replay past the event, including fade-out"
+},
+"step_spline": {
+"default": "0",
+"help": null
+},
+"suitvolume": {
+"default": "0.25",
+"help": null
+},
+"sv_accelerate": {
+"default": "10",
+"help": null
+},
+"sv_airaccelerate": {
+"default": "10",
+"help": null
+},
+"sv_allchat": {
+"default": "1",
+"help": "Players can receive all other players\\' text chat, team restrictions apply"
+},
+"sv_allow_votes": {
+"default": "1",
+"help": "Allow voting?"
+},
+"sv_autosave": {
+"default": "1",
+"help": "Set to 1 to autosave game on level transition. Does not affect autosave triggers."
+},
+"sv_backspeed": {
+"default": "0.6",
+"help": "How much to slow down backwards motion"
+},
+"sv_benchmark_autovprofrecord": {
+"default": "0",
+"help": "If running a benchmark and this is set, it will record a vprof file over the duration of the benchmark with filename benchmark.vprof."
+},
+"sv_benchmark_numticks": {
+"default": "3300",
+"help": "If > 0, then it only runs the benchmark for this # of ticks."
+},
+"sv_bonus_challenge": {
+"default": "0",
+"help": "Set to values other than 0 to select a bonus map challenge type."
+},
+"sv_bounce": {
+"default": "0",
+"help": "Bounce multiplier for when physically simulated objects collide with other objects."
+},
+"sv_clamp_unsafe_velocities": {
+"default": "1",
+"help": "Whether the server will attempt to clamp velocities that could cause physics bugs or crashes."
+},
+"sv_clockcorrection_msecs": {
+"default": "30",
+"help": "The server tries to keep each player\\'s m_nTickBase withing this many msecs of the server absolute tickcount"
+},
+"sv_comp_mode_allow_dc": {
+"default": "0",
+"help": "Set this to 1 to allow direct connects in Competitive mode"
+},
+"sv_dc_friends_reqd": {
+"default": "0",
+"help": "Set this to 0 to allow direct connects to a game in progress even if no presents are present"
+},
+"sv_debug_player_use": {
+"default": "0",
+"help": "Visualizes +use logic. Green cross=trace success, Red cross=trace too far, Green box=radius success"
+},
+"sv_disable_pas": {
+"default": "1",
+"help": null
+},
+"sv_disable_querycache": {
+"default": "0",
+"help": "debug - disable trace query cache"
+},
+"sv_footstep_sound_frequency": {
+"default": "0.97",
+"help": "How frequent to hear the player\\'s step sound or how fast they appear to be running from first person."
+},
+"sv_footsteps": {
+"default": "1",
+"help": "Play footstep sound for players"
+},
+"sv_force_transmit_ents": {
+"default": "0",
+"help": "Will transmit all entities to client, regardless of PVS conditions (will still skip based on transmit flags, however)."
+},
+"sv_force_transmit_players": {
+"default": "0",
+"help": "Will transmit players to all clients regardless of PVS checks."
+},
+"sv_friction": {
+"default": "4",
+"help": "World friction."
+},
+"sv_gravity": {
+"default": "800",
+"help": "World gravity."
+},
+"sv_grenade_trajectory": {
+"default": "0",
+"help": "Shows grenade trajectory visualization in-game."
+},
+"sv_grenade_trajectory_dash": {
+"default": "0",
+"help": "Dot-dash style grenade trajectory arc"
+},
+"sv_grenade_trajectory_thickness": {
+"default": "0.2",
+"help": "Visible thickness of grenade trajectory arc"
+},
+"sv_grenade_trajectory_time": {
+"default": "20",
+"help": "Length of time grenade trajectory remains visible."
+},
+"sv_grenade_trajectory_time_spectator": {
+"default": "4",
+"help": "Length of time grenade trajectory remains visible as a spectator."
+},
+"sv_infinite_ammo": {
+"default": "0",
+"help": "Player\\'s active weapon will never run out of ammo. If set to 2 then player has infinite total ammo but still has to reload the magazine."
+},
+"sv_lagcompensationforcerestore": {
+"default": "1",
+"help": "Don\\'t test validity of a lag comp restore, just do it."
+},
+"sv_lagflushbonecache": {
+"default": "1",
+"help": "Flushes entity bone cache on lag compensation"
+},
+"sv_lagpushticks": {
+"default": "0",
+"help": "Push computed lag compensation amount by this many ticks."
+},
+"sv_massreport": {
+"default": "0",
+"help": null
+},
+"sv_max_distance_transmit_footsteps": {
+"default": "1250.0",
+"help": "Maximum distance to transmit footstep sound effects."
+},
+"sv_max_usercmd_future_ticks": {
+"default": "8",
+"help": "Prevents clients from running usercmds too far in the future. Prevents speed hacks."
+},
+"sv_maxspeed": {
+"default": "175",
+"help": null
+},
+"sv_maxunlag": {
+"default": "1.0",
+"help": "Maximum lag compensation in seconds"
+},
+"sv_maxusrcmdprocessticks": {
+"default": "16",
+"help": "Maximum number of client-issued usrcmd ticks that can be replayed in packet loss conditions, 0 to allow no restrictions"
+},
+"sv_maxusrcmdprocessticks_holdaim": {
+"default": "1",
+"help": "Hold client aim for multiple server sim ticks when client-issued usrcmd contains multiple actions (0: off; 1: hold this server tick; 2+: hold multiple ticks)"
+},
+"sv_maxusrcmdprocessticks_warning": {
+"default": "-1",
+"help": "Print a warning when user commands get dropped due to insufficient usrcmd ticks allocated, number of seconds to throttle, negative disabled"
+},
+"sv_maxvelocity": {
+"default": "3500",
+"help": "Maximum speed any ballistically moving object is allowed to attain per axis."
+},
+"sv_netvisdist": {
+"default": "10000",
+"help": "Test networking visibility distance"
+},
+"sv_noclipaccelerate": {
+"default": "5",
+"help": null
+},
+"sv_noclipspeed": {
+"default": "5",
+"help": null
+},
+"sv_npc_talker_maxdist": {
+"default": "1024",
+"help": "NPCs over this distance from the player won\\'t attempt to speak."
+},
+"sv_occlude_players": {
+"default": "0",
+"help": null
+},
+"sv_one_hit_kill": {
+"default": "0",
+"help": null
+},
+"sv_optimizedmovement": {
+"default": "1",
+"help": null
+},
+"sv_phys_props_block_movers": {
+"default": "0",
+"help": null
+},
+"sv_playerperfhistorycount": {
+"default": "20",
+"help": "Number of samples to maintain in player perf history"
+},
+"sv_pushaway_clientside": {
+"default": "0",
+"help": "Clientside physics push away (0=off, 1=only localplayer, 1=all players)"
+},
+"sv_pushaway_clientside_size": {
+"default": "15",
+"help": "Minimum size of pushback objects"
+},
+"sv_pushaway_force": {
+"default": "30000",
+"help": "How hard physics objects are pushed away from the players on the server."
+},
+"sv_pushaway_max_force": {
+"default": "1000",
+"help": "Maximum amount of force applied to physics objects by players."
+},
+"sv_pushaway_max_player_force": {
+"default": "10000",
+"help": "Maximum of how hard the player is pushed away from physics objects."
+},
+"sv_pushaway_min_player_speed": {
+"default": "75",
+"help": "If a player is moving slower than this, don\\'t push away physics objects (enables ducking behind things)."
+},
+"sv_pushaway_player_force": {
+"default": "200000",
+"help": "How hard the player is pushed away from physics objects (falls off with inverse square of distance)."
+},
+"sv_pvsskipanimation": {
+"default": "1",
+"help": "Skips SetupBones when npc\\'s are outside the PVS"
+},
+"sv_ranked": {
+"default": "1",
+"help": "Enables ranking for duels."
+},
+"sv_regeneration_force_on": {
+"default": "0",
+"help": "Cheat to test regenerative health systems"
+},
+"sv_regeneration_wait_time": {
+"default": "1.0",
+"help": null
+},
+"sv_rollangle": {
+"default": "0",
+"help": "Max view roll angle"
+},
+"sv_rollspeed": {
+"default": "200",
+"help": null
+},
+"sv_script_think_interval": {
+"default": "0.1",
+"help": null
+},
+"sv_showanimstate": {
+"default": "-1",
+"help": "Show the (server) animation state for the specified entity (-1 for none)."
+},
+"sv_showanimstate_activities": {
+"default": "1",
+"help": "Show activities in the (server) animation state display."
+},
+"sv_showanimstate_log": {
+"default": "0",
+"help": "1 to output sv_showanimstate to Msg(). 2 to store in AnimStateServer.log. 3 for both."
+},
+"sv_showladders": {
+"default": "0",
+"help": "Show bbox and dismount points for all ladders (must be set before level load.)\\n"
+},
+"sv_showlagcompensation": {
+"default": "0",
+"help": "Show lag compensated hitboxes whenever a player is lag compensated."
+},
+"sv_skyname": {
+"default": "ber_sky_overnight",
+"help": "Current name of the skybox texture"
+},
+"sv_soundemitter_trace": {
+"default": "-1",
+"help": "Show all EmitSound calls including their symbolic name and the actual wave file they resolved to. (-1 = for nobody, 0 = for everybody, n = for one entity)\\n"
+},
+"sv_soundemitter_version": {
+"default": "2",
+"help": "specfies what version of soundemitter system to use\\n"
+},
+"sv_spec_post_death_additional_time": {
+"default": "0",
+"help": ""
+},
+"sv_specaccelerate": {
+"default": "5",
+"help": null
+},
+"sv_specnoclip": {
+"default": "1",
+"help": null
+},
+"sv_specspeed": {
+"default": "3",
+"help": null
+},
+"sv_stepsize": {
+"default": "18",
+"help": null
+},
+"sv_stopspeed": {
+"default": "100",
+"help": "Minimum stopping speed when on ground."
+},
+"sv_strict_notarget": {
+"default": "0",
+"help": "If set, notarget will cause entities to never think they are in the pvs"
+},
+"sv_suppress_viewpunch": {
+"default": "0",
+"help": null
+},
+"sv_test_scripted_sequences": {
+"default": "0",
+"help": "Tests for scripted sequences that are embedded in the world. Run through your map with this set to check for NPCs falling through the world."
+},
+"sv_teststepsimulation": {
+"default": "1",
+"help": null
+},
+"sv_thinktimecheck": {
+"default": "0",
+"help": "Check for thinktimes all on same timestamp."
+},
+"sv_threaded_init": {
+"default": "0",
+"help": null
+},
+"sv_turbophysics": {
+"default": "0",
+"help": "Turns on turbo physics"
+},
+"sv_unlag": {
+"default": "0",
+"help": "Enables player lag compensation"
+},
+"sv_unlag_debug": {
+"default": "0",
+"help": null
+},
+"sv_unlag_fixstuck": {
+"default": "0",
+"help": "Disallow backtracking a player for lag compensation if it will cause them to become stuck"
+},
+"sv_unlockedchapters": {
+"default": "1",
+"help": null
+},
+"sv_uwu": {
+"default": "0",
+"help": null
+},
+"sv_vehicle_autoaim_scale": {
+"default": "8",
+"help": null
+},
+"sv_vote_allow_in_warmup": {
+"default": "0",
+"help": "Allow voting during warmup?"
+},
+"sv_vote_allow_spectators": {
+"default": "0",
+"help": "Allow spectators to initiate votes?"
+},
+"sv_vote_command_delay": {
+"default": "2",
+"help": "How long after a vote passes until the action happens"
+},
+"sv_vote_count_spectator_votes": {
+"default": "0",
+"help": "Allow spectators to vote on issues?"
+},
+"sv_vote_creation_timer": {
+"default": "120",
+"help": "How often someone can individually call a vote."
+},
+"sv_vote_disallow_kick_on_match_point": {
+"default": "0",
+"help": "Disallow vote kicking on the match point round."
+},
+"sv_vote_failure_timer": {
+"default": "300",
+"help": "A vote that fails cannot be re-submitted for this long"
+},
+"sv_vote_quorum_ratio": {
+"default": "0.501",
+"help": "The minimum ratio of players needed to vote on an issue to resolve it."
+},
+"sv_vote_timer_duration": {
+"default": "15",
+"help": "How long to allow voting on an issue"
+},
+"sv_wateraccelerate": {
+"default": "10",
+"help": null
+},
+"sv_waterdist": {
+"default": "12",
+"help": "Vertical view fixup when eyes are near water plane."
+},
+"sv_waterfriction": {
+"default": "1",
+"help": null
+},
+"template_debug": {
+"default": "0",
+"help": null
+},
+"tf_escort_score_rate": {
+"default": "1",
+"help": "Score for escorting the train, in points per second"
+},
+"think_limit": {
+"default": "10",
+"help": "Maximum think time in milliseconds, warning is printed if this is exceeded."
+},
+"trace_report": {
+"default": "0",
+"help": null
+},
+"traceline_spin": {
+"default": "1",
+"help": null
+},
+"tv_allow_autorecording_index": {
+"default": "-1",
+"help": "When >=0 restricts autorecording only to the specified TV index"
+},
+"tv_allow_static_shots": {
+"default": "1",
+"help": "Auto director uses fixed level cameras for shots"
+},
+"tv_delay": {
+"default": "10",
+"help": "BBTV broadcast delay in seconds"
+},
+"tv_delay1": {
+"default": "15",
+"help": "BBTV[instance 1] broadcast delay in seconds"
+},
+"tv_delaymapchange": {
+"default": "1",
+"help": "Delays map change until broadcast is complete"
+},
+"tv_relaytextchat": {
+"default": "0",
+"help": "Relay text chat data: 0=off, 1=say, 2=say+say_team"
+},
+"view_punch_decay": {
+"default": "18",
+"help": "Decay factor exponent for view punch"
+},
+"view_recoil_tracking": {
+"default": "0.45",
+"help": "How closely the view tracks with the aim punch from weapon recoil"
+},
+"violence_ablood": {
+"default": "1",
+"help": "Draw alien blood"
+},
+"violence_agibs": {
+"default": "1",
+"help": "Show alien gib entities"
+},
+"violence_hblood": {
+"default": "1",
+"help": "Draw human blood"
+},
+"violence_hgibs": {
+"default": "1",
+"help": "Show human gib entities"
+},
+"vis_force": {
+"default": "0",
+"help": null
+},
+"vismon_poll_frequency": {
+"default": ".5",
+"help": null
+},
+"vismon_trace_limit": {
+"default": "12",
+"help": null
+},
+"voice_player_speaking_delay_threshold": {
+"default": "0.5f",
+"help": null
+},
+"voice_serverdebug": {
+"default": "0",
+"help": null
+},
+"vprof_scope_entity_gamephys": {
+"default": "0",
+"help": null
+},
+"vprof_scope_entity_thinks": {
+"default": "0",
+"help": null
+},
+"vprof_think_limit": {
+"default": "0",
+"help": null
+},
+"vs_challenge_timeout": {
+"default": "5",
+"help": "How long a challenge will last for."
+},
+"vs_duel_cooldown_time": {
+"default": "10.0",
+"help": "Duel cooldown delay (in seconds) after the winner has been decided"
+},
+"vs_duel_intermission": {
+"default": "3.0",
+"help": "Intermission delay (in seconds) before starting another round of duels."
+},
+"vs_duel_intermission_time": {
+"default": "5.0",
+"help": "Duel intermission delay (in seconds) after the round winner has been decided"
+},
+"vs_duel_no_replay": {
+"default": "0",
+"help": "Disables the replay at the conclusion of a duel."
+},
+"vs_duel_no_slowdown": {
+"default": "0",
+"help": "Disables the slowdown at the conclusion of a duel."
+},
+"vs_duel_override_pvp": {
+"default": "-1",
+"help": "Override PvP mode, affects all *EMPTY* duels. -1 = no override, 0 = 1on1, 1 = 2on1, 2 = 2on2."
+},
+"vs_duel_replay_time": {
+"default": "5.0",
+"help": "How long duel replays should play for"
+},
+"vs_duel_rounds": {
+"default": "3",
+"help": "Amount of rounds each duel lasts, must be odd."
+},
+"vs_duel_teamattack_enabled": {
+"default": "0",
+"help": "Can players in the same team damage each other?"
+},
+"vs_duel_timelimit": {
+"default": "99.0",
+"help": "Duel time limit (in seconds) in arena mode."
+},
+"vs_duel_warmup_time_ffa": {
+"default": "3.0",
+"help": "Duel warmup delay (in seconds) for FFA"
+},
+"vs_duel_warmup_time_initial": {
+"default": "6.0",
+"help": "Duel warmup delay (in seconds) while players are frozen"
+},
+"vs_duel_warmup_time_intermediate": {
+"default": "3.0",
+"help": "Duel warmup delay (in seconds) while players are frozen"
+},
+"vs_free_corpsetime": {
+"default": "4",
+"help": "How long a player watches their corpse after dying."
+},
+"vs_free_duel_timelimit": {
+"default": "90",
+"help": "How long a private duel can last for."
+},
+"vs_free_respawntime": {
+"default": "5",
+"help": "How long a player needs to wait before respawning."
+},
+"vs_lms_duel_timelimit": {
+"default": "400.0",
+"help": "Duel time limit (in seconds) in last man standing mode."
+},
+"vs_lms_intermission": {
+"default": "8.0",
+"help": "Intermission delay (in seconds) before starting another round."
+},
+"vs_queue_mode": {
+"default": "0",
+"help": "Game queue mode, 0 = arena queues, 1 = Tournament mode."
+},
+"vs_tourney_duel_timelimit": {
+"default": "80.0",
+"help": "Duel time limit (in seconds) in tournament mode."
+},
+"vs_unranked": {
+"default": "0",
+"help": "Enable Unranked mode, 0 = ranked, 1 = unranked."
+},
+"weapon_showproficiency": {
+"default": "0",
+"help": null
+},
+"xbox_autothrottle": {
+"default": "1",
+"help": null
+},
+"xbox_steering_deadzone": {
+"default": "0.0",
+"help": null
+},
+"xbox_throttlebias": {
+"default": "100",
+"help": null
+},
+"xbox_throttlespoof": {
+"default": "200",
+"help": null
+},
+"xc_crouch_debounce": {
+"default": "0",
+"help": null
+}
+}
