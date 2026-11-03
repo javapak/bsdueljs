@@ -62,6 +62,7 @@ export class FX {
         break;
       }
       case 'blocked': this.spawn('wallhit_spark', at(e.pos, e.dir)); break; // case 1
+      case 'guarded': this.spawn('guard_fx', at(e.pos, e.dir)); break;
       case 'world_hit': this.spawn('wallhit_spark', at(e.pos, e.normal ?? e.dir)); break; // case 1 from the world trace [1803dd200]
       case 'intercepted': { // case 2: both at the defender's center
         const d = pl(e.defender), c = d ? center(d.o) : e.pos;

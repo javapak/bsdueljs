@@ -33,7 +33,7 @@ These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapo
 | `shared/bsp.js`, `mdl.js`, `kv.js`, `gamedata.js` | game file formats and script loading |
 | `shared/bot.js` | practice bot |
 | `server/main.mjs` | HTTP, WebSocket, game loop |
-| `client/` | WebGPU renderer, VTF decoding, input, HUD |
+| `client/` | WebGPU renderer, VTF decoding, input, HUD, audio |
 | `tests/` | see below |
 
 ## Tests
@@ -45,6 +45,7 @@ These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapo
 | `node tests/anim_check.mjs "<install>"` | blended root motion matches real movement in 8 directions, every character and stance; stride scales with speed |
 | `node tests/move_check.mjs "<install>"` | animation clocks run in real time at the game's playback rate; shuffle, roll and throw timing and travel |
 | `node tests/sim_check.mjs "<install>"` | headless duel on real game data |
+| `node tests/ragdoll_check.mjs "<install>"` | every character's ragdoll settles on a real map, stays connected and above the floor |
 | `node tests/hit_check.mjs "<install>"` | a tapped attack on a stationary fighter lands across one continuous band of ranges, every character and stance |
 | `node tests/particle_check.mjs "<install>/berimbau"` | every dispatched effect runs on real data, emits, and finishes |
 | `node tests/net_check.mjs "<install>"` | full match between two real WebSocket clients; path traversal rejected |
@@ -52,7 +53,7 @@ These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapo
 
 ## Effects
 
-The client runs the game's own `.pcf` particle definitions and `.vmt` materials (`shared/pcf.js`, `shared/particles.js`, `client/fx.js`). `tools/vcs_dis.py` in `../tools` disassembles the game's compiled shaders.
+The client runs the game's own `.pcf` particle definitions and `.vmt` materials (`shared/pcf.js`, `shared/particles.js`, `client/fx.js`). `tools/vcs_dis.py` disassembles the game's compiled shaders (Windows; uses the OS's `d3dcompiler_47.dll`).
 
 | effect | when | source |
 |---|---|---|
@@ -61,7 +62,7 @@ The client runs the game's own `.pcf` particle definitions and `.vmt` materials 
 | `smoke_ring`, `riposte_forward_fx` | intercept | read from `client.dll` |
 | `penetrate_fx`, `smoke_ring` | guard break | read from `client.dll` |
 | `smoke_ring`, `penetrate_fx` | blades clash | effects read from `client.dll`; that a clash uses this case is inferred |
-| `berimbau_player_charge`, `charge_tier3_forward` | charge reaches tier 2 and 3 | read from `server.dll` |
+| `berimbau_player_charge`, `charge_tier3_forward` | charge reaches tier 2; a tier 3 attack releases | read from `server.dll` |
 | `blocking_forward` | parry window (jian) | read from `client.dll` |
 | swing trail (`trace_map`) | while the swing's tracer script runs | read from `client.dll`; samples per frame, not per `.bst` entry |
 | charge overlay (`bb_charge`) | while charging | ported from shader bytecode; how it fades after release is inferred |
@@ -78,21 +79,25 @@ not differentially tested, `[I]` inferred.
 **Verified against the original:** block, parry, clash, combo scaling, damage, hit outcome.
 
 **Recovered from the binary, not differentially tested:** cvar defaults, input priority, attack direction,
-charge and swing flow, tracer sampling, blade hit traces (blade and tip sweep, against the bounding box), locomotion pose blending and walk/run selection, knockback, recovery table, jump, acceleration, round flow and timings, grab and throw, shuffle and roll delays, root motion, playback rates, charge pose timing, charge acceleration, knockdown and the downed state, multi-hit timing.
+charge and swing flow, tracer sampling and its clock, blade pose (move params, pitch aiming through the spine), whole-unit blade ends, blade hit traces (blade and tip sweep, against the bounding box), the blade clash boxes and the clash window after a swing's script ends, world interrupts, locomotion pose blending and walk/run selection, knockback, recovery table, jump, acceleration, round flow and timings, grab and throw, shuffle and roll delays, root motion, playback rates, charge pose timing, charge acceleration, knockdown and the downed state, multi-hit timing.
 
 **Inferred; likely to feel different from the real game:**
 * soft collision between fighters (the original feeds a push through move input at strengths that depend on the action; the sim applies one constant push)
-* blade-versus-blade clash geometry (closest approach, not the original bloated-box test)
 * time-up rule (higher health wins)
 * max health of 100 (assumed; not found in the binary)
 * stance changes, block hold, combo-string reset timing, attacker recoil on a block
 * client-side crossfade timing, and walking borrowing the run cycle's upper body
-* the move input the charge speed scales (`CHARGE_INPUT` in `sim.js`: the formula is recovered, but this one value is a judgment call), gravity curve details
+* the move input the charge speed scales (`CHARGE_INPUT` in `sim.js`: the formula is recovered, but this one value is a judgment call)
+
+**Not ported yet in blade collision:** which yaw a blade uses during a rotation lock (the model's, assumed), and the foil guard box's second axis, which the game leaves unset.
+
+**Ragdolls:** bodies, masses, damping and joint limits are the model's `.phy`, but the solver is `shared/ragdoll.js`, not Havok, so how a body falls is approximate, and it collides with the world only, as capsules.
 
 **Not implemented:** collision with static props (fighters walk through them; world brushes and
-displacements do collide), client-side prediction (fine on LAN, will feel laggy over the internet), sound,
-sword and cape models (a blade matching the hit segment is drawn instead), feints, wall moves, throwing weapons, sheathing, water, 3D skybox,
-bump maps and reflections.
+displacements do collide), client-side prediction (fine on LAN, will feel laggy over the internet), music,
+sword and cape models (a blade matching the hit segment is drawn instead), feints, wall moves, throwing weapons, sheathing, water, 3D skybox.
+
+**Shaders:** world surfaces are ported from `lightmappedgeneric_ps30` (bumped and self-shadowed lightmaps, cubemaps, seamless mapping) and the sky from `sky_ps20b`. Still missing on the world: CSM sun shadows, auto exposure (a fixed scale stands in), `$blendmodulatetexture`, `$phong`, `$lightwarptexture` and detail blend modes other than mod2x; unpatched `env_cubemap` uses the map's default cubemap. Static props and characters still use placeholder lighting rather than `phong` and `vertexlit_and_unlit_generic`, and water, `lightmappedreflective` and `refract` surfaces aren't ported.
 
 **Swords:** any character can use any sword type, chosen on the join menu. The menu starts on the sword the game
 gives that character (`scripts/items.json`). The type sets damage, charge, multi-hit rate and block tech: longsword and

@@ -127,12 +127,12 @@ function snapshot() {
     t: 'snap', time: rnd(world.time), players: world.players.map((p) => {
       const an = world.animOf(p);
       return {
-        id: p.id, n: p.name, c: p.character, o: p.origin.map(rnd), v: p.vel.map(rnd), y: rnd(p.yaw), p: rnd(p.pitch), hp: p.health, al: p.alive, g: p.onGround, st: p.stance, score: p.score, kn: p.kneeling, fz: p.frozen,
-        hs: p.hitstop > 0 ? 1 : 0, an: { b: an.base, bc: rnd3(an.baseCycle), u: an.upper, uc: rnd3(an.upperCycle), mx: rnd3(an.mx), my: rnd3(an.my), sp: rnd(an.speed), af: an.armsFrom, ch: an.charge && [an.charge[0], an.charge[1], rnd3(an.charge[2]), rnd3(an.charge[3]), rnd3(an.charge[4])], ld: an.land && [rnd3(an.land[0]), rnd3(an.land[1])], lg: rnd3(an.legs) },
-        a: p.act ? { n: p.act.name, ph: p.act.phase, ti: p.act.tier, ct: p.act.chargeTier, l: rnd(Math.max(0, p.act.lock)), cf: p.act.phase === 'charge' && p.act.chargeTotal > 0 ? rnd3(Math.min(1, p.act.t / p.act.chargeTotal)) : 0, tr: p.act.tracer?.length && p.act.tracerIdx > 0 && p.act.tracerIdx < p.act.tracer.length ? 1 : 0, pw: (p.act.kind === 'parry' || p.act.kind === 'kneelparry') && p.act.t <= p.act.parryWindow ? 1 : 0 } : null,
+        id: p.id, n: p.name, c: p.character, o: p.origin.map(rnd), v: p.vel.map(rnd), y: rnd(p.yaw), p: rnd(p.pitch), hp: p.health, al: p.alive, g: p.onGround, st: world.stanceNow(p), gs: p.stance, ci: world.time - p.comboIdxTime > cvars.f('bb_combo_reset_time') ? 0 : p.comboIdx, sw: p.sword || data.charSword[p.character], score: p.score, kn: p.kneeling, fz: p.frozen,
+        hs: p.hitstop > 0 ? 1 : 0, an: { b: an.base, bc: rnd3(an.baseCycle), u: an.upper, uc: rnd3(an.upperCycle), mx: rnd3(an.mx), my: rnd3(an.my), sp: rnd(an.speed), af: an.armsFrom, ch: an.charge && [an.charge[0], an.charge[1], rnd3(an.charge[2]), rnd3(an.charge[3]), rnd3(an.charge[4])], ld: an.land && [rnd3(an.land[0]), rnd3(an.land[1])], lg: rnd3(an.legs), tl: an.touch && [an.touch[0], rnd3(an.touch[1]), rnd3(an.touch[2])] },
+        a: p.act ? { n: p.act.name, ph: p.act.phase, ti: p.act.tier, ct: p.act.chargeTier, l: rnd(Math.max(0, p.act.lock)), cf: p.act.phase === 'charge' && p.act.chargeTotal > 0 ? rnd3(Math.min(1, p.act.t / p.act.chargeTotal)) : 0, ce: p.act.phase === 'charge' ? rnd3(p.act.t) : 0, tr: p.act.trCount > 0 && p.act.bladeRing?.length && !p.act.trDone ? 1 : 0, pw: (p.act.kind === 'parry' || p.act.kind === 'kneelparry') && p.act.t <= p.act.parryWindow ? 1 : 0 } : null,
       };
     }),
-    duel: { s: d.state, tm: rnd(Math.max(0, d.timer)), r: d.round, w: d.wins, f: d.fighters, win: d.winner, max: cvars.f('vs_duel_rounds') },
+    duel: { s: d.state, tm: rnd(Math.max(0, d.timer)), r: d.round, w: d.wins, res: d.results, f: d.fighters, win: d.winner, max: cvars.f('vs_duel_rounds') },
   };
 }
 
@@ -145,7 +145,7 @@ const server = http.createServer((req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   if (path === '/api/info') {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist }])), swords: SWORD_LABELS, charSword: data.charSword, bot: args.bot }));
+    res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist }])), swords: SWORD_LABELS, charSword: data.charSword, swordSounds: Object.fromEntries(Object.entries(data.swordTypes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([n]) => n.startsWith('sound')))])), strings: Object.fromEntries(Object.keys(data.characters).map((k) => [k, [0, 1, 2, 3].map((st) => { const f = data.stanceFor(k, st)?.forward; return (f?.['action[]'] || [f?.action]).filter(Boolean).length; })])), bot: args.bot }));
     return;
   }
   if (path.startsWith('/game/')) {

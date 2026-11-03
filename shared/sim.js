@@ -8,9 +8,20 @@ import { angleVectors, add, sub, scale, dot, cross, len, norm, entityMatrix, ang
 import { MASK_PLAYERSOLID } from './bsp.js';
 
 export const TICK = 1 / 66;
+// [R 18037b1eb] the player reset sets the entity gravity field to 3, multiplying sv_gravity
+const PLAYER_GRAVITY_SCALE = 3;
+// [R 18037b470] these presses are remembered; a new one replaces the old. The time is the client's bb_ibt default.
+const BUFFERED_BUTTONS = 0x428807, INPUT_BUFFER_TIME = 0.33;
+// [R 180454b60, 180450a80] Source's Gain() through a cosine; sharpness 0 makes Bias() pow(x, 0), so this is 0.5
+function jumpGravityEase(n, bias, sharpness) {
+  const x = n >= bias ? (n - bias) * 0.5 / (1 - bias) + 0.5 : n * 0.5 / bias;
+  const b = (v) => Math.pow(v, Math.log(1 - sharpness) * -1.4427);
+  const gain = x < 0.5 ? 0.5 * b(2 * x) : 1 - 0.5 * b(2 - 2 * x);
+  return (1 - Math.cos(gain * Math.PI)) * 0.5;
+}
 export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0x200, RIGHT: 0x400, GRAB: 0x20000, WALK: 0x40000, SHUFFLE: 0x400000, BLOCK: 0x800000, STANCE_FAST: 0x2000000, STANCE_BAL: 0x4000000, STANCE_HEAVY: 0x8000000 };
 const HULL_MIN = [-13, -13, 0], HULL_MAX = [13, 13, 72];
-const STEP = 18, BLADE_CLASH_DIST = 8;
+const STEP = 18;
 // [I] forward/side input the charge dampen scales. cl_forwardspeed defaults to 450, but that hits the speed cap almost
 // at once, leaving charge progress no effect and running faster than players report, so this uses sv_maxspeed's 175.
 const CHARGE_INPUT = 175;
@@ -39,10 +50,15 @@ export class Player {
       hitsThisSwing: 0, lastHitTime: -100, multiBlock: 0, turnRate: 0, turnRateTime: 0, blockCooldown: 0,
       moveCooldown: 0, animTime: 0, moveAmt: 0, frozen: false, forceImpulse: null,
       kneeling: false, airState: 0, airT: 0, landT: 0, landCycle: 0, airLandCycle: 0, moveCycle: 0, moveSeq: null, chargeCycle: 0, chargeFade: 0, chargeRun: 0, chargeAnims: null,
+      bufferMask: 0, bufferT: 0, airStance: false, queuedStance: -1, touchdown: null,
     });
   }
 
   get pressed() { return this.buttons & ~this.prevButtons; }
+  // [R 180379c10] held, or pressed within the input buffer
+  wants(bit) { return !!(this.buttons & bit) || (this.bufferT > 0 && !!(this.bufferMask & bit)); }
+  // [R 180379b80] the same, and using it spends the buffered press
+  use(bit) { const w = this.wants(bit); if (w) this.bufferMask &= ~bit; return w; }
   isAttacking() { return !!this.act?.attack; }
   isSwinging() { return !!(this.act?.attack && this.act.phase === 'swing'); }
 }
@@ -55,7 +71,6 @@ export class World {
     this.tickCount = 0;
     this.players = [];
     this.events = [];
-    this.bladeCache = new Map();
     this.duel = new Duel(this);
   }
 
@@ -77,41 +92,87 @@ export class World {
   // -------------------------------------------------------------------- per player
   tickPlayer(p) {
     const dt = TICK;
-    if (p.onGround) p.jumpCooldown = Math.max(0, p.jumpCooldown - dt); // [R 18036f7d0]
+    // [R 18036f7d0] runs before movement: the ground clears the gravity timer and only there does the cooldown count
+    if (p.onGround) { p.jumpGravityT = 0; p.jumpCooldown = Math.max(0, p.jumpCooldown - dt); }
+    p.jumpGravityT = Math.max(0, p.jumpGravityT - dt);
     p.blockCooldown = Math.max(0, p.blockCooldown - dt);
     p.moveCooldown = Math.max(0, p.moveCooldown - dt);
     p.turnRateTime = Math.max(0, p.turnRateTime - dt);
+    const pressed = p.pressed & BUFFERED_BUTTONS;
+    if (pressed) { p.bufferMask = pressed; p.bufferT = INPUT_BUFFER_TIME; }
     // [R 18037aa00] both fighters freeze during hitstop; [R 180388b60] the multi-hit timer doesn't count it
     if (p.hitstop > 0) { p.hitstop -= dt; p.lastHitTime += dt; return; }
     p.animTime += dt;
-    if (p.alive && !p.frozen) { this.updateAction(p); this.dispatchInput(p); } else if (!p.alive) this.updateAction(p);
+    // [R 180379df0] stance first, then the current action, then new input
+    if (p.alive && !p.frozen) { this.updateStance(p); this.updateAction(p); this.dispatchInput(p); } else if (!p.alive) this.updateAction(p);
     this.updateYaw(p, dt);
+    p.bufferT = Math.max(0, p.bufferT - dt); // [R 18036fa86]
+    const td = p.touchdown;
+    if (td) {
+      // [R 18037d2c0, 18037e7d0] the cycle runs through the land lock; the weight moves toward 1, then back to 0, at 7 per second
+      td.t -= dt;
+      const goal = td.t > 0 ? 1 : 0, step = 7 * dt;
+      td.weight = Math.abs(goal - td.weight) <= step ? goal : td.weight + Math.sign(goal - td.weight) * step;
+      if (td.t <= 0 && td.weight <= 0) p.touchdown = null;
+    }
     this.move(p, dt);
     this.advanceAnim(p);
     if (p.isSwinging() && !p.frozen) this.updateTracer(p);
+    // [R 180388b9a] a frozen fighter's hit timer stands still
+    else if (p.frozen && p.lastHitTime > 0) p.lastHitTime += TICK;
+  }
+
+  stanceNow(p) { return p.airStance ? 3 : p.stance; }
+
+  // [R 18037b6b0] Every tick. Past bb_air_stance_height_min off the ground the stance becomes air, and an attack still
+  // charging becomes that stance's version, keeping its charge. Landing undoes it, so a release lower than that
+  // height stays a ground attack.
+  updateStance(p) {
+    const a = p.act, charging = a?.attack && a.phase === 'charge', swinging = a?.attack && a.phase === 'swing';
+    if (!p.onGround) {
+      const airMove = a ? (charging ? flag(a.def.air_move) : a.airMove) : false;
+      if (!p.airStance && (airMove || !a || charging) && this.heightAboveGround(p) > this.cv.f('bb_air_stance_height_min')) {
+        p.airStance = true;
+        if (charging && !airMove) this.swapCharge(p, 3);
+      }
+    } else if (p.airStance) {
+      p.airStance = false;
+      if (charging) this.swapCharge(p, p.stance);
+    }
+    // stance keys: a charge, or a swing in the air, queues the change until it can apply
+    const pr = p.pressed;
+    const key = pr & IN.STANCE_BAL ? 0 : pr & IN.STANCE_HEAVY ? 2 : pr & IN.STANCE_FAST ? 1 : -1;
+    const want = key >= 0 ? key : p.queuedStance;
+    if (want < 0) return;
+    if (charging) { p.queuedStance = want; return; }
+    if (!p.onGround && key >= 0 && swinging) { p.queuedStance = want; return; }
+    if (p.onGround || key >= 0 || !p.airStance) { this.setStance(p, want); p.queuedStance = -1; }
+  }
+
+  // [R 1803723a0, 1803444f0] replaces the charging attack with the same direction and string slot in a stance;
+  // elapsed charge time carries over
+  swapCharge(p, stance) {
+    const a = p.act, def = this.data.attackFor(p.character, stance, a.dir, a.comboIdx);
+    if (!def) return;
+    Object.assign(a, { name: def.name, def, stanceType: stance, anim: def.charge_animation, seq: this.seqInfo(p, def.charge_animation).seq });
   }
 
   // [R 180379df0] input priority order: current action update, shuffle, grab, roll, block, attack.
-  // Shuffle, grab and roll read the held button, so holding one repeats it once its delay runs out.
+  // Everything reads held or buffered, so holding a button repeats it once it can run again.
   dispatchInput(p) {
-    const pr = p.pressed;
-    // stance change only outside attacks [I]
-    if (!p.isAttacking()) {
-      if (pr & IN.STANCE_BAL) this.setStance(p, 0);
-      if (pr & IN.STANCE_FAST) this.setStance(p, 1);
-      if (pr & IN.STANCE_HEAVY) this.setStance(p, 2);
-    }
     if (p.kneeling) { this.dispatchKneeling(p); return; }
-    if ((p.buttons & IN.SHUFFLE) && this.canEvade(p)) { this.startEvade(p, 'Shuffle'); return; }
-    if ((p.buttons & IN.GRAB) && this.canGrab(p)) { this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
-    if (p.act && !this.canCancel(p)) return;
-    if ((p.buttons & IN.ROLL) && this.canEvade(p)) { this.startEvade(p, 'Roll'); return; }
-    // [R 180374d80] +block requires ground, no attack in progress and the post-attack cooldown elapsed
-    if ((p.buttons & IN.BLOCK) && p.onGround && !p.isAttacking() && !p.blockCooldown && !p.act) {
+    if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); this.startEvade(p, 'Shuffle'); return; }
+    if (p.wants(IN.GRAB) && this.canGrab(p)) { p.use(IN.GRAB); this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
+    if (p.wants(IN.ROLL) && this.canEvade(p)) { p.use(IN.ROLL); this.startEvade(p, 'Roll'); return; }
+    // [R 180374d80] +block requires ground, nothing locking, attack not held and the post-attack cooldown elapsed
+    if (p.wants(IN.BLOCK) && p.onGround && !p.act && !(p.buttons & IN.ATTACK) && !p.blockCooldown) {
+      p.use(IN.BLOCK);
       this.startAction(p, this.blockActionName(p), { dir: this.moveDir(p) });
       return;
     }
-    if ((pr & IN.ATTACK) && !p.isAttacking()) this.startAttack(p);
+    // [R 18037a1bd] the current action decides whether anything new can start
+    if (p.act && !this.canCancel(p) && !this.attackCancelsEvade(p)) return;
+    if (!p.isAttacking() && p.use(IN.ATTACK)) this.startAttack(p);
   }
 
   // [R 180379df0, 18037b510] downed: jump gets up, block is the recovery intercept (also late in a roll),
@@ -155,6 +216,36 @@ export class World {
     const a = p.act;
     if (a.locked === false) return true;
     return a.lock <= 0;
+  }
+
+  // [R 18034c360, 180344d10] a held attack replaces a shuffle or roll once the sequence's remaining time, not the
+  // lock's, is within the cancel time
+  attackCancelsEvade(p) {
+    const a = p.act;
+    if (!a || !(p.buttons & IN.ATTACK)) return false;
+    const cancel = a.name === 'Shuffle' ? 'bb_shufflecancel_time' : a.name === 'Roll' ? 'bb_rollcancel_time' : null;
+    return !!cancel && a.dur - a.t <= this.cv.f(cancel);
+  }
+
+  // [R 1803467c0] attack held late in a swing cancels it, on a swing to the opposite side or after a stance change,
+  // if the sword allows it. "Late" is the stance's bb_side_cancel_percent_* of the lock remaining.
+  swingCancels(p, a) {
+    if (!p.wants(IN.ATTACK)) return false;
+    const percent = this.cv.f(`bb_side_cancel_percent_${['balanced', 'fast', 'heavy', 'air'][a.stanceType]}`);
+    if (percent <= 0 || percent * a.lockDur <= a.lock) return false;
+    const f = this.data.stanceFor(p.character, a.stanceType)?.forward;
+    const strings = (f?.['action[]'] || [f?.action]).filter(Boolean).length;
+    if (a.comboIdx >= strings) return false;
+    const sword = this.sword(p), dir = this.moveDir(p);
+    if (flag(sword.cansidecancel) && ((a.dir === 3 && dir === 1) || (a.dir === 1 && dir === 3))) return true;
+    return flag(sword.canstancecancel) && a.stanceAtRelease !== this.stanceNow(p);
+  }
+
+  // [R 18036e190, 1803462a0, 180343d80] the action decides: an attack allows a jump while charging or when it
+  // isn't air_move; anything else follows its script's "jump" key
+  canJumpInAction(a) {
+    if (!a) return true;
+    return a.attack ? a.phase === 'charge' || !a.airMove : flag(a.def?.jump);
   }
 
   // [R 180374910] direction: 0 forward, 1 right, 2 back, 3 left
@@ -203,7 +294,7 @@ export class World {
     if (lock < 0) lock = dur;
     p.act = {
       id: actionId(name), name, def, anim, seq, dur, lock, lockDur: lock, t: 0, dir, cycle: 0,
-      moveLock: flag(def.move_lock), animMove: flag(def.animation_move), rotLock: flag(def.rotation_lock),
+      moveLock: flag(def.move_lock), airMove: flag(def.air_move), animMove: flag(def.animation_move), upperBody: flag(def.action_upperbody), lowerBody: def.animation_lowerbody, rotLock: flag(def.rotation_lock),
       rotSpeed: num(def.rotation_speed, 0), moveScale: num(def.move_scale, 1), runScale: num(def.runspeedscale, 1),
       parryWindow: num(def.parry_window, 0), kind: String(def.factoryclass || '').toLowerCase(), ...opts.extra,
     };
@@ -213,9 +304,7 @@ export class World {
 
   // [R 180374910] picks the attack from stance/direction/combo index, then CAttackAction charges
   startAttack(p) {
-    let stance = p.stance;
-    const airborne = !p.onGround && this.heightAboveGround(p) > this.cv.f('bb_air_stance_height_min');
-    if (airborne) stance = 3;
+    const stance = this.stanceNow(p);
     const dir = this.moveDir(p);
     if (this.time - p.comboIdxTime > this.cv.f('bb_combo_reset_time')) p.comboIdx = 0; // [I] combo string reset timing
     const def = p.kneeling ? this.data.action('RecoveryAttack') : this.data.attackFor(p.character, stance, dir, p.comboIdx);
@@ -226,8 +315,8 @@ export class World {
     p.act = {
       id: 39, name: def.name, def, attack: true, phase: 'charge', stanceType: stance, dir, tier: 0, t: 0, chargeTotal: chargeTime, lock: chargeTime, lockDur: chargeTime,
       anim: def.charge_animation, seq: this.seqInfo(p, def.charge_animation).seq, dur: 0, cycle: 0, moveLock: false, animMove: false, rotLock: false, rotSpeed: 0,
-      moveScale: 1, runScale: 1, kind: 'attack', chargeTier: 0, landed: false,
-      tracerIdx: 0, bladeRing: [],
+      moveScale: 1, runScale: 1, kind: 'attack', chargeTier: 0, landed: false, comboIdx: p.comboIdx,
+      bladeRing: [],
     };
     this.emit({ type: 'attack_started', id: p.id, dir });
     // the recovery attack skips the charge and always swings at tier 3, and it stands you up
@@ -249,14 +338,20 @@ export class World {
     lock = Math.min(lock, dur + 0.2);
     Object.assign(a, {
       phase: 'swing', tier, tierDef, anim, seq, dur, t: 0, lock, lockDur: lock, cycle: 0,
-      moveLock: flag(tierDef.move_lock ?? a.def.move_lock), animMove: flag(a.def.animation_move), rotLock: flag(tierDef.rotation_lock ?? a.def.rotation_lock),
+      // [R 180345941, 180345be6, 180346630, 180346737] once released these come from the tier: move_lock alone, animation_move
+      // needs both levels, and the tier's action_upperbody lets the legs keep running under the swing
+      moveLock: flag(tierDef.move_lock), airMove: flag(a.def.air_move) || flag(tierDef.air_move), animMove: flag(a.def.animation_move) && flag(tierDef.animation_move ?? '1'),
+      upperBody: flag(tierDef.action_upperbody ?? a.def.action_upperbody), lowerBody: tierDef.animation_lowerbody ?? a.def.animation_lowerbody, rotLock: flag(tierDef.rotation_lock ?? a.def.rotation_lock),
       rotSpeed: num(a.def.rotation_speed, 0), moveScale: num(tierDef.move_scale ?? a.def.move_scale, 1),
       runScale: num(tierDef.runspeedscale, 1), damage: num(tierDef.damage, 10), kbScale: num(tierDef.knockback_scale ?? a.def.knockback_scale, 1),
-      tracer: this.data.tracers[p.character]?.[String(anim).toUpperCase()] || [], tracerIdx: 0, prevCycle: 0,
+      tracer: this.data.tracers[p.character]?.[String(anim).toUpperCase()] || [], trCycle: 0, trNew: 0, trDone: false, trExt: cv.f('bb_tracer_parry_extension_duration'), bladeRing: [], prevCycle: 0, stanceAtRelease: this.stanceNow(p),
     });
     p.blockCooldown = lock + cv.f('bb_block_post_attack_cooldown');
-    p.comboIdx = (p.comboIdx + 1) % 3;
+    p.comboIdx++; // [R 180374120] attackFor wraps it at the stance's string length
     p.comboIdxTime = this.time;
+    // [R 180346ced] a sword that doesn't knock down plays the soft sound
+    if (tier === 2) this.emit({ type: 'charge_tier', id: p.id, tier, soft: !flag(this.sword(p).tier3shouldknockdown) });
+    a.trCount = a.tracer.length;
     this.emit({ type: 'swing', id: p.id, tier, stance: a.stanceType, dir: a.dir });
   }
 
@@ -269,10 +364,14 @@ export class World {
       // [R 180345cf0] release when the button is up or the charge timer runs out
       if (!(p.buttons & IN.ATTACK) || a.lock <= 0 || this.cv.f('bb_nocharge')) this.releaseAttack(p);
       else {
-        const t = a.t, m = num(this.sword(p).chargetime, 1);
-        const ct = t >= this.cv.f('bb_charge_tier3_time') * m ? 2 : t >= this.cv.f('bb_charge_tier2_time') * m ? 1 : 0;
-        if (ct !== a.chargeTier) { a.chargeTier = ct; this.emit({ type: 'charge_tier', id: p.id, tier: ct }); }
+        // [R 180345d8a] tier 2 announces itself when reached; tier 3 waits for the release
+        if (!a.chargeTier && a.t >= this.cv.f('bb_charge_tier2_time') * num(this.sword(p).chargetime, 1)) { a.chargeTier = 1; this.emit({ type: 'charge_tier', id: p.id, tier: 1 }); }
       }
+      return;
+    }
+    if (a.attack && this.swingCancels(p, a)) {
+      p.act = null;
+      p.moveCooldown = this.cv.f('bb_shuffle_postattack_delay');
       return;
     }
     if (a.dur > 0) { a.prevCycle = a.cycle; a.cycle = !a.attack && a.seq?.flags & 1 ? (a.t / a.dur) % 1 : Math.min(1, a.t / a.dur); }
@@ -329,28 +428,33 @@ export class World {
     if (wl > 0) wish = [wish[0] / wl, wish[1] / wl, 0];
     p.moveAmt = wishSpeed;
 
-    this.gravity(p, dt);
+    // [R 18036f615] while an animation drives movement, an air_move or noclip_move action takes no gravity
+    const animDriven = this.rootMotionActive(p);
+    this.gravity(p, dt, animDriven && (a.airMove || flag(a.def?.noclip_move)));
     // [R 18036e190] jump: flat force + directional punch, gravity curve afterwards
-    if ((p.buttons & IN.JUMP) && !(p.prevButtons & IN.JUMP) && p.onGround && !p.jumpCooldown && !locked && !a) {
+    if (!animDriven && p.wants(IN.JUMP) && !(p.prevButtons & IN.JUMP) && p.onGround && !p.jumpCooldown && !p.frozen && p.alive && !p.kneeling && this.canJumpInAction(a)) {
+      p.use(IN.JUMP);
       const dir = wl > 0 ? wish : [0, 0, 0];
       p.vel[0] += dir[0] * cv.f('bb_jump_punch');
       p.vel[1] += dir[1] * cv.f('bb_jump_punch');
-      p.vel[2] += cv.f('bb_jumpforce');
+      p.vel[2] += cv.f('bb_jumpforce') - p.gravityHalf; // the jump runs its own FinishGravity
       p.onGround = false;
       p.jumpCooldown = cv.f('bb_jumpcooldown');
       p.jumpGravityT = cv.f('bb_jumpgravity_time');
       this.emit({ type: 'jump', id: p.id });
     }
 
-    if (p.onGround) {
+    if (animDriven) {
+      this.rootMotion(p, dt);
+      if (a.airMove && p.vel[2] > 0) p.onGround = false; // [R 18036eed1] upward motion leaves the ground
+      if (p.onGround) { p.vel[2] = 0; this.walkMove(p, dt); } else { this.tryMove(p, dt); p.vel[2] -= p.gravityHalf; }
+    } else if (p.onGround) {
       this.friction(p, dt);
       p.vel[2] = 0;
-      if (a?.animMove && a.seq && a.lock > 0) this.rootMotion(p, dt);
-      else this.accelerate(p, wish, wishSpeed, cv.f('sv_accelerate'), dt, charging);
+      this.accelerate(p, wish, wishSpeed, cv.f('sv_accelerate'), dt, charging);
       this.walkMove(p, dt);
     } else {
       this.airAccelerate(p, wish, wishSpeed, dt);
-      if (a?.animMove && a.seq && a.lock > 0 && flag(a.def?.air_move)) this.rootMotion(p, dt);
       this.tryMove(p, dt);
       p.vel[2] -= p.gravityHalf;
     }
@@ -358,24 +462,22 @@ export class World {
   }
 
 
-  // [R 180370070, 18036f060] half the step before moving and half after, as Source does. Over the first
-  // bb_jumpgravity_time the scale eases start -> peak -> end, softer while jump is held.
-  gravity(p, dt) {
+  // [R 180370070, 18036f060] half the step before moving and half after, as Source does, on the ground too.
+  // Over bb_jumpgravity_time the scale goes start -> peak -> end, softer while jump is held.
+  gravity(p, dt, off) {
     p.gravityHalf = 0;
-    if (p.onGround) return;
+    if (off) return;
     const cv = this.cv;
-    let g = cv.f('sv_gravity') * num(p.act?.tierDef?.gravity_scale ?? p.act?.def?.gravity_scale, 1);
+    let g = cv.f('sv_gravity') * PLAYER_GRAVITY_SCALE * num(p.act?.tierDef?.gravity_scale ?? p.act?.def?.gravity_scale, 1);
     if (p.jumpGravityT > 0) {
-      const be = cv.f('bb_jumpgravity_blend_end');
-      const n = (1 - Math.min(1, p.jumpGravityT / cv.f('bb_jumpgravity_time'))) / be;
-      if (n < 1) {
-        const bias = cv.f('bb_jumpgravity_blend_peak') / be;
-        const x = n >= bias ? (n - bias) * 0.5 / (1 - bias) + 0.5 : n * 0.5 / bias;
-        const e = (1 - Math.cos(x * Math.PI)) * 0.5;
+      const bs = cv.f('bb_jumpgravity_blend_start'), span = cv.f('bb_jumpgravity_blend_end') - bs;
+      const n = (1 - Math.min(1, p.jumpGravityT / cv.f('bb_jumpgravity_time')) - bs) / span;
+      if (n >= 0 && n < 1) {
+        const bias = (cv.f('bb_jumpgravity_blend_peak') - bs) / span;
+        const e = jumpGravityEase(n, bias, cv.f('bb_jumpgravity_scale_sharpness'));
         const peak = cv.f((p.buttons & IN.JUMP) ? 'bb_jumpgravity_scale_peak_jump_pressed' : 'bb_jumpgravity_scale_peak_jump_released');
         g *= n >= bias ? peak + (cv.f('bb_jumpgravity_scale_end') - peak) * e : cv.f('bb_jumpgravity_scale_start') + (peak - cv.f('bb_jumpgravity_scale_start')) * e;
       }
-      p.jumpGravityT = Math.max(0, p.jumpGravityT - dt);
     }
     p.gravityHalf = g * dt * 0.5;
     p.vel[2] -= p.gravityHalf;
@@ -428,9 +530,20 @@ export class World {
   }
 
   // [R 18036e810] while animation_move is on, velocity is the sequence's own motion this tick times move_scale
+  // [R 1803447b0, 180345ad0, 1803459f0] the action's animation_move, for the tier's animation_move_duration if it has
+  // one. An attack only moves this way after release, and an air_move one with a landing stops on touching down.
+  rootMotionActive(p) {
+    const a = p.act;
+    if (!a?.animMove || !a.seq || !a.dur) return false;
+    if (!a.attack && a.lock <= 0) return false;
+    if (a.attack && (a.airMove && p.onGround && a.def.landing)) return false;
+    const window = num(a.tierDef?.animation_move_duration ?? a.def?.animation_move_duration, -1);
+    return (window < 0 || a.t <= window) && a.t <= a.dur + TICK;
+  }
+
+  // [R 18036e810] velocity comes from the sequence; height too for air_move, and noclip_move holds it level
   rootMotion(p, dt) {
     const a = p.act, c = this.char(p);
-    if (!a.dur) return;
     const c1 = a.cycle, c0 = Math.max(0, c1 - dt / a.dur);
     const m0 = c.seqMovement(a.seq, c0), m1 = c.seqMovement(a.seq, c1);
     const d = sub(m1, m0);
@@ -440,6 +553,8 @@ export class World {
     const tx = (f[0] * d[0] - r[0] * d[1]) * s, ty = (f[1] * d[0] - r[1] * d[1]) * s;
     p.vel[0] = tx;
     p.vel[1] = ty;
+    if (a.airMove) p.vel[2] = d[2] * s;
+    else if (flag(a.def?.noclip_move)) p.vel[2] = 0;
   }
 
   trace(a, b) { return this.bsp.traceBox(a, b, HULL_MIN, HULL_MAX, MASK_PLAYERSOLID); }
@@ -504,12 +619,16 @@ export class World {
       if (!t.startsolid) p.origin = t.endpos;
       if (!wasGround) {
         p.jumpGravityT = 0;
-        // [R 180345580] landing from an air attack caps XY speed
-        if (p.act?.attack && p.act.stanceType === 3 && p.isSwinging()) {
+        // [R 180345580, 18037d1da] an air_move swing touching down caps XY speed, takes the tier's land lock and
+        // blends its landing sequence in over whatever is left of the swing
+        const a = p.act;
+        if (a && p.isSwinging() && a.airMove && a.def.landing && !a.touchedDown) {
+          a.touchedDown = true;
           const mx = this.cv.f('bb_air_max_land_momentum');
           const s = Math.hypot(p.vel[0], p.vel[1]);
           if (s > mx) { p.vel[0] *= mx / s; p.vel[1] *= mx / s; }
-          p.act.lock = Math.min(p.act.lock, 0.1);
+          a.lock = a.lockDur = num(a.tierDef.land_lock_duration, 0.5); // [R 1803462f0]
+          if (this.seqInfo(p, a.def.landing).seq) p.touchdown = { anim: a.def.landing, t: a.lock, total: a.lock, weight: 0 };
         }
       }
     } else p.onGround = false;
@@ -539,58 +658,165 @@ export class World {
   }
 
   // -------------------------------------------------------------------- tracer (CBerimbauTracer)
-  // Blade samples at the .bst cycles are computed from the attack sequence alone, then cached in
-  // model space. [R 1803867c0]: base = sword_grip + fwd*grip_offset, tip = base + fwd*length
-  bladeLocal(p, seq, cycle) {
-    const key = p.character + '|' + seq.label + '|' + cycle;
-    let v = this.bladeCache.get(key);
-    if (!v) {
-      const c = this.char(p);
-      const pose = c.evalLayers([{ seq, cycle, weight: 1 }]);
-      const b = c.boneMatrices(pose, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]);
-      const m = b[c.root.boneByName.get('sword_grip')];
-      const fwd = [m[0], m[4], m[8]];
-      const grip = this.cv.f('bb_tracer_default_grip_offset'), L = this.cv.f('bb_tracer_default_length');
-      const pos = [m[3], m[7], m[11]];
-      v = { base: add(pos, scale(fwd, grip)), tip: add(pos, scale(fwd, grip + L)) };
-      this.bladeCache.set(key, v);
+  // [R 1803867c0, 180389b00] One blade sample, posed fresh: the swing's sequence with move_x/move_y from the current
+  // velocity, and the attacker's pitch split across the spine. base = sword_grip + fwd*grip_offset, tip = base + fwd*length.
+  bladeSample(p, cycle) {
+    const c = this.char(p), a = p.act, cv = this.cv;
+    let mx = 0, my = 0;
+    if (Math.abs(p.vel[0]) >= 0.01 || Math.abs(p.vel[1]) >= 0.01) {
+      const l = Math.hypot(p.vel[0], p.vel[1]), vx = p.vel[0] / l, vy = p.vel[1] / l;
+      const y = p.yaw * Math.PI / 180, cy = Math.cos(y), sy = Math.sin(y);
+      const fwd = vx * cy + vy * sy, right = vx * sy - vy * cy;
+      // the corners of the blend square need a longer vector to reach it
+      const deg = ((Math.atan2(right, fwd) * 180 / Math.PI) % 90 + 90) % 90;
+      const k = 1 + 0.41421 * Math.max(0, Math.min(1, (Math.sin(0.7854 - Math.abs(deg - 45) * 0.01745 + 1.5708) - 1) * -3.41423));
+      mx = Math.max(-1, Math.min(1, fwd * k));
+      my = Math.max(-1, Math.min(1, right * k));
     }
-    return v;
+    const layers = [];
+    // [R 180346b95] the tier's lower body sequence sits underneath at cycle 0
+    const lower = a.lowerBody ? c.seqForActivity(a.lowerBody) : null;
+    if (lower) { const [px, py] = c.blendFor(lower, mx, my); layers.push({ seq: lower, cycle: 0, weight: 1, px, py }); }
+    const [px, py] = c.blendFor(a.seq, mx, my);
+    layers.push({ seq: a.seq, cycle, weight: 1, px, py });
+    const bones = c.boneMatrices(c.evalLayers(layers), entityMatrix(p.origin, [0, p.yaw, 0]), { pitch: this.aimPitch(p.pitch), yaw: p.yaw });
+    const m = bones[c.root.boneByName.get('sword_grip')];
+    const fwd = [m[0], m[4], m[8]], pos = [m[3], m[7], m[11]];
+    const grip = cv.f('bb_tracer_default_grip_offset'), L = Math.trunc(cv.f('bb_tracer_default_length'));
+    // [R 18038603f] the server stores both ends as whole units
+    return { base: add(pos, scale(fwd, grip)).map(Math.trunc), tip: add(pos, scale(fwd, grip + L)).map(Math.trunc) };
   }
 
-  bladeWorld(p, l) {
-    const m = entityMatrix(p.origin, [0, p.yaw, 0]);
-    return { base: matPoint(m, l.base), tip: matPoint(m, l.tip) };
+  // [R 180389b77]
+  aimPitch(pitch) {
+    const cv = this.cv;
+    if (!cv.f('bb_tracer_pitchaiming_enable')) return 0;
+    const v = pitch * cv.f('bb_tracer_pitchaiming_scale'), mn = cv.f('bb_tracer_pitchaiming_min');
+    return v < mn ? mn : Math.min(cv.f('bb_tracer_pitchaiming_max'), v);
   }
 
+  // [R 180385f70] appends a sample, keeping 20, and boxes it with the one before for the clash test
+  pushBlade(p, cycle) {
+    const a = p.act, seg = this.bladeSample(p, cycle), ring = a.bladeRing;
+    ring.push(seg);
+    if (ring.length > 20) ring.shift();
+    if (ring.length >= 2) seg.box = this.bladeBox(ring[ring.length - 2], seg);
+    a.trNew++;
+  }
+
+  // [R 180386145] The swept blade between two samples, as an oriented box. x runs along the blade and z along the swing.
+  bladeBox(prev, cur) {
+    const mid = (s) => scale(add(s.base, s.tip), 0.5);
+    const mp = mid(prev), sweep = sub(mid(cur), mp);
+    const center = add(mp, scale(sweep, 0.5));
+    const along = normOr(add(normOr(sub(prev.tip, prev.base)), normOr(sub(cur.tip, cur.base))));
+    const left = normOr(cross(sweep, along));
+    const up = cross(along, left), right = scale(left, -1);
+    const mn = [0, 0, 0], mx = [0, 0, 0];
+    for (const q of [cur.tip, prev.tip, cur.base, prev.base]) {
+      const d = sub(q, center);
+      const v = [dot(d, along), dot(d, right), dot(d, up)];
+      for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], v[k]); mx[k] = Math.max(mx[k], v[k]); }
+    }
+    const side = this.cv.f('bb_tracer_parry_bloat_side');
+    mn[0] -= side; mn[1] -= side; mx[1] += side;
+    mx[0] += this.cv.f('bb_tracer_parry_bloat_up');
+    mx[2] += this.cv.f('bb_tracer_parry_bloat_fwd');
+    return { center, along, sweepDir: normOr(sweep), mn, mx };
+  }
+
+  // [R 180388570] The server's clock is the sequence's own rate from the release, paused while frozen. Samples come at the
+  // script's cycles; after the last one, every tick until the extension runs out. Those only count for clashes.
   updateTracer(p) {
     const a = p.act;
-    if (!a.tracer?.length || a.tracerIdx >= a.tracer.length) return;
-    const fresh = [];
-    while (a.tracerIdx < a.tracer.length && a.tracer[a.tracerIdx] <= a.cycle) {
-      const seg = this.bladeWorld(p, this.bladeLocal(p, a.seq, a.tracer[a.tracerIdx]));
-      fresh.push(seg);
-      a.bladeRing.push(seg);
-      if (a.bladeRing.length > 20) a.bladeRing.shift();
-      a.tracerIdx++;
+    if (a.trDone || !a.tracer) return;
+    const ext = this.cv.f('bb_tracer_parry_extension_enabled');
+    const prev = a.trCycle;
+    if (prev < 1) a.trCycle = Math.min(1, prev + (a.dur > 0 ? TICK / a.dur : 1));
+    const cur = a.trCycle;
+    if (a.trCount <= 0) {
+      if (ext && a.trExt > 0) a.trExt -= TICK; else { a.trDone = true; return; }
     }
-    // [R 180388c60]: clash first, then hits. Both fighters' live blades are compared. Hits are retested every
-    // tick until the script ends, because the target can walk into a blade between samples.
-    if (fresh.length) {
-      const opp = this.findClash(p, fresh);
+    for (const key of a.tracer) {
+      if (key > prev && key <= cur) { this.pushBlade(p, key); a.trCount--; }
+    }
+    if ((prev >= 1 || cur >= 1) && a.trCount > 0) a.trCount = 0;
+    else if (a.trCount === 0 && ext) this.pushBlade(p, cur);
+    // [R 180388c60] a clash first, then hits
+    if (this.cv.f('bb_tracer_parry_enabled')) {
+      const opp = this.findClash(p);
       if (opp) { this.applyClash(p, opp); return; }
+      const guard = this.findGuard(p);
+      if (guard) { this.applyGuard(p, guard); return; }
     }
-    this.collectHits(p, fresh.length);
+    this.collectHits(p);
   }
 
-  // [R 1803890c0, geometry I] closest approach of the blades, replacing the bloat-box test of 180389580
-  findClash(p, segs) {
+  // [R 1803893bd, 18034b3a0, 1803873e0] A fighter in Guard holds a box at the sword grip. It has to be nearer the attacker's
+  // eye than the fighter's own. The box is passed along with its back corner in both slots, so it reaches past the grip by
+  // length_back and has a radius of 2*width. [I] its second axis is never filled in by the game; the blade's stands in.
+  findGuard(p) {
+    const ring = p.act.bladeRing, cv = this.cv;
     for (const q of this.players) {
-      if (q === p || !q.alive || !q.isSwinging() || !q.act.bladeRing.length) continue;
-      if (q.act.tracerIdx >= q.act.tracer.length && q.act.cycle > 1) continue;
-      for (const s of segs) for (const t of q.act.bladeRing.slice(-6)) if (segSegDist(s.base, s.tip, t.base, t.tip) < BLADE_CLASH_DIST) return q;
+      if (q === p || !q.alive || q.act?.id !== 2 || !q.act.seq) continue;
+      const d = sub(p.origin, q.origin);
+      if (dot(d, d) > 90000) continue;
+      const c = this.char(q);
+      const bones = c.boneMatrices(c.evalLayers([{ seq: q.act.seq, cycle: 0, weight: 1 }]), entityMatrix(q.origin, [0, q.yaw, 0]), { pitch: this.aimPitch(q.pitch), yaw: q.yaw });
+      const m = bones[c.root.boneByName.get('sword_grip')];
+      const center = [m[3], m[7], m[11]], along = [m[0], m[4], m[8]];
+      const eye = (f) => [f.origin[0], f.origin[1], f.origin[2] + 64];
+      const toGuard = sub(center, eye(p)), toEye = sub(eye(q), eye(p));
+      if (dot(toGuard, toGuard) > dot(toEye, toEye)) continue;
+      const w = cv.f('bb_guard_obb_width'), back = -cv.f('bb_guard_obb_length_back');
+      const box = { center, along, sweepDir: along, mn: [back, -w, -w], mx: [back, -w, -w] };
+      for (let i = ring.length - 1; i >= 1; i--) if (ring[i].box && this.boxesClash(p, ring[i].box, box)) return q;
     }
     return null;
+  }
+
+  // [R 18034b5c0] The guard takes the interrupt and both are pushed apart, by the attacker's stance. The swing itself carries on.
+  applyGuard(p, q) {
+    const cv = this.cv, st = p.act.stanceType;
+    const [name, push] = st === 0 ? ['balanced', 0.3] : st === 2 ? ['heavy', 0.7] : ['fast', 0.2];
+    const lock = cv.f(`bb_guard_recovery_${name}`), kb = cv.f(`bb_guard_knockback_${name}`) * push;
+    const d = norm([q.origin[0] - p.origin[0], q.origin[1] - p.origin[1], 0]);
+    this.startAction(q, 'Interrupt', { force: true, lock, anim: 'ACT_BB_PARRY_UPPER' });
+    q.blockCooldown = lock + cv.f('bb_guard_delay');
+    q.vel = [d[0] * kb, d[1] * kb, q.vel[2]];
+    p.vel = [-d[0] * kb, -d[1] * kb, p.vel[2]];
+    const hs = cv.f('bb_guard_hitstop');
+    if (hs > 0) { p.hitstop = hs; q.hitstop = hs; }
+    p.lastHitTime = this.time;
+    this.emit({ type: 'guarded', attacker: p.id, defender: q.id, dir: this.swingDir(p, q), pos: add(q.origin, [0, 0, 40]) });
+  }
+
+  // [R 1803890c0] Newest samples first against the opponent's, within 300 units. Only a live tracer on the other side counts.
+  findClash(p) {
+    const mine = p.act.bladeRing;
+    for (const q of this.players) {
+      if (q === p || !q.alive || !q.isSwinging() || !q.act.bladeRing?.length || q.act.trDone) continue;
+      const d = sub(p.origin, q.origin);
+      if (dot(d, d) > 90000) continue;
+      const theirs = q.act.bladeRing;
+      for (let i = mine.length - 1; i >= 1; i--) for (let j = theirs.length - 1; j >= 1; j--) {
+        if (mine[i].box && theirs[j].box && this.boxesClash(p, mine[i].box, theirs[j].box)) return q;
+      }
+    }
+    return null;
+  }
+
+  // [R 180389580] Each box reduces to a segment and a radius of 2*sqrt(y*z); a foil doubles its own radius.
+  // They clash if the segments pass within the larger of the two.
+  boxesClash(p, a, b) {
+    let ra = 2 * Math.sqrt(a.mx[1] * a.mx[2]);
+    const rb = 2 * Math.sqrt(b.mx[1] * b.mx[2]);
+    if (String(p.sword || this.data.charSword[p.character]).toLowerCase() === 'foil') ra *= 2;
+    const seg = (s, r) => [add(s.center, scale(s.along, s.mx[0] - r)), add(s.center, scale(s.sweepDir, s.mn[0] + r))];
+    const [a0, a1] = seg(a, ra), [b0, b1] = seg(b, rb);
+    const close = closestOnSegments(a0, a1, b0, b1);
+    if (!close) return false;
+    return Math.hypot(close[0][0] - close[1][0], close[0][1] - close[1][1], close[0][2] - close[1][2]) < Math.max(ra, rb);
   }
 
   fighter(p, sw) {
@@ -644,45 +870,48 @@ export class World {
     return this.char(p).seqForActivity(st?.idle || 'ACT_BB_B_IDLE') || this.char(p).seqs[0];
   }
 
-  // [R 180387640] newest samples first, at least max(new samples, bb_tracer_max_hit_tests + 1) of them. Each traces
+  // [R 180387640] Newest samples first, at least max(new samples, bb_tracer_max_hit_tests + 1) of them. Each traces
   // base to tip, and if that is clear, the previous tip to this tip, so a fast blade can't step over a fighter.
   // Both are bb_tracer_thickness hull traces. The engine only tests hitboxes for true rays [R engine.dll 180257d40],
   // so these hit the fighter's bounding box rather than the model's hitboxes.
-  // [R 180388c60] a swing's first sample never hits, and further hits wait multihitRate * bb_timebetweenhits
-  collectHits(p, freshCount) {
+  // [R 180388e18] Testing stops once the script's samples are used up, so its last sample never hits.
+  // [R 180388de2] Further hits wait multihitRate * bb_timebetweenhits.
+  collectHits(p) {
     const cv = this.cv, thick = cv.f('bb_tracer_thickness');
     const a = p.act, sw = this.sword(p), ring = a.bladeRing;
-    if (ring.length < 2) return;
+    const fresh = a.trNew;
+    a.trNew = 0;
+    if (a.trCount <= 0 || ring.length < 2) return;
     const rate = num(a.dir & 1 ? sw.multihitratesidex : sw.multihitrateforwardx, 1) * cv.f('bb_timebetweenhits');
-    if (this.time - p.lastHitTime < rate) return;
+    if (p.lastHitTime > 0 && this.time - p.lastHitTime < rate) return;
     const box = [-thick, -thick, -thick], boxMax = [thick, thick, thick];
-    const tests = Math.max(freshCount, cv.f('bb_tracer_max_hit_tests') + 1);
+    const tests = Math.min(20, Math.max(fresh - 1, cv.f('bb_tracer_max_hit_tests'))) + 1;
     for (let i = ring.length - 1, n = 0; i >= 0 && n < tests; i--, n++) {
       const s = ring[i];
       const w = this.bsp.traceBox(s.base, s.tip, box, boxMax, 1);
-      // world interrupt [R cvar bb_tracer_world_interrupt_enabled; recovery bb_recovery_hit_world]
-      if (cv.f('bb_tracer_world_interrupt_enabled') && !a.worldHit && w.fraction < 0.75 && !w.startsolid) {
-        a.worldHit = true;
-        this.emit({ type: 'world_hit', id: p.id, pos: w.endpos, normal: w.normal });
-      }
-      if (this.bladeHitsFighter(p, s.base, s.tip, w.startsolid ? 1 : w.fraction, thick)) return;
+      if (this.bladeTrace(p, s.base, s.tip, w, thick)) return;
       if (w.fraction === 1 && i > 0) {
         const from = ring[i - 1].tip, w2 = this.bsp.traceBox(from, s.tip, box, boxMax, 1);
-        if (this.bladeHitsFighter(p, from, s.tip, w2.startsolid ? 1 : w2.fraction, thick)) return;
+        if (this.bladeTrace(p, from, s.tip, w2, thick)) return;
       }
     }
   }
 
-  // One trace against every other fighter's bounding box, stopped by the world at `reach`
-  bladeHitsFighter(p, from, to, reach, thick) {
+  // One trace: whichever it reaches first of a fighter's bounding box or the world
+  bladeTrace(p, from, to, w, thick) {
+    const reach = w.startsolid ? 1 : w.fraction;
     for (const v of this.players) {
       if (v === p || !v.alive) continue;
-      const mn = add(v.origin, HULL_MIN), mx = add(v.origin, HULL_MAX);
-      const t = segHitT(from, to, mn, mx, thick);
+      const t = segHitT(from, to, add(v.origin, HULL_MIN), add(v.origin, HULL_MAX), thick);
       if (t < 0 || t > reach) continue;
-      p.lastHitTime = this.time;
-      this.resolveHit(p, v, add(from, scale(sub(to, from), t)));
+      // [R 180372f47] a fighter in this action can't be hit
+      if (v.act?.id !== 30) { p.lastHitTime = this.time; this.resolveHit(p, v, add(from, scale(sub(to, from), t))); }
       return true;
+    }
+    // [R 180372fd2] the world only interrupts a grounded swing, 20 units or more above the feet
+    if (this.cv.f('bb_tracer_world_interrupt_enabled') && !p.act.worldHit && w.fraction < 1 && !w.startsolid && p.onGround && w.endpos[2] - p.origin[2] >= 20) {
+      p.act.worldHit = true;
+      this.emit({ type: 'world_hit', id: p.id, pos: w.endpos, normal: w.normal });
     }
     return false;
   }
@@ -754,7 +983,7 @@ export class World {
     vic.health = Math.max(0, vic.health - Math.trunc(dmg.damage));
     vic.vel = [dmg.force[0], dmg.force[1], Math.max(vic.vel[2], dmg.force[2])];
     if (o.incrementMultiBlock) att.multiBlock++;
-    this.emit({ type: result === C.HIT_BLOCKED ? 'blocked' : result === C.HIT_GUARD_BROKEN ? 'break_block' : 'hit', attacker: att.id, victim: vic.id, damage: Math.trunc(dmg.damage), tier: a.tier, stance: att.stance, dir: this.swingDir(att, vic), pos });
+    this.emit({ type: result === C.HIT_BLOCKED ? 'blocked' : result === C.HIT_GUARD_BROKEN ? 'break_block' : 'hit', attacker: att.id, victim: vic.id, damage: Math.trunc(dmg.damage), tier: a.tier, stance: a.stanceType, dir: this.swingDir(att, vic), pos });
     if (vic.health <= 0) { this.kill(vic, att); return; }
     this.applyReaction(att, vic, result, sw, a);
   }
@@ -949,14 +1178,14 @@ export class World {
     }
     let baseCycle = p.moveCycle, upper = null, upperCycle = 0;
     if (a && !(a.attack && a.phase === 'charge')) {
-      if (flag(a.def?.action_upperbody)) {
+      if (a.upperBody) {
         // Upper-body actions leave locomotion running, or use the action's own lower body.
-        if (a.def.animation_lowerbody) base = a.def.animation_lowerbody;
+        if (a.lowerBody) base = a.lowerBody;
         if (a.anim) { upper = a.anim; upperCycle = a.dur > 0 ? a.cycle : a.t % 1; }
       } else if (a.anim) {
         base = a.anim;
         baseCycle = a.dur > 0 ? a.cycle : a.t % 1;
-        if (a.def?.animation_lowerbody && a.anim !== a.def.animation_lowerbody) { base = a.def.animation_lowerbody; upper = a.anim; upperCycle = baseCycle; }
+        if (a.lowerBody && a.anim !== a.lowerBody) { base = a.lowerBody; upper = a.anim; upperCycle = baseCycle; }
       }
     }
     // Walk cycles have no stance arms of their own; they borrow the upper body the stance's run auto-layers.
@@ -967,7 +1196,9 @@ export class World {
     else if (!p.onGround && !a?.attack && !p.kneeling) land = [p.airLandCycle, 0.9];
     // [R 18037d7e0] an action in the air keeps the jump legs, fading in over 0.12s
     const legs = p.airState === 1 && a ? Math.max(0, Math.min(1, (this.time - p.airT) * 8.33333)) : 0;
-    return { base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs };
+    const td = p.touchdown;
+    const touch = td && td.weight > 0 ? [td.anim, 1 - Math.max(0, td.t) / td.total, td.weight] : null;
+    return { base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch };
   }
 }
 
@@ -987,6 +1218,8 @@ export function animLayers(c, an) {
     const cs = c.seqForActivity(charge[i]);
     if (cs && charge[3 + i] > 0) { const [ux, uy] = c.blendFor(cs, an.mx, an.my); out.push({ seq: cs, cycle: charge[2], weight: charge[3 + i], px: ux, py: uy }); }
   }
+  const touch = an.touch ?? an.tl;
+  if (touch) { const ts = c.seqForActivity(touch[0]); if (ts) out.push({ seq: ts, cycle: touch[1], weight: touch[2], px: 0.5, py: 0.5 }); }
   const land = an.land ?? an.ld;
   if (land && land[1] > 0) out.push({ seq: c.seqForActivity('ACT_BB_JUMP_LAND'), cycle: land[0], weight: land[1], px: 0.5, py: 0.5 });
   const legs = an.legs ?? an.lg;
@@ -997,6 +1230,20 @@ export function animLayers(c, an) {
 const fnum = (v) => (v === undefined || v === null ? null : Math.fround(typeof v === 'number' ? v : parseFloat(v)));
 const fnumOpt = fnum;
 const inum = (v) => (v === undefined || v === null ? null : parseInt(v, 10));
+
+const normOr = (a) => { const l = Math.hypot(a[0], a[1], a[2]); return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; };
+// [R 1803880a0] Closest points of the two lines, each then clamped into its segment's bounds. Null if near parallel or too short.
+function closestOnSegments(p1, p2, p3, p4) {
+  const p13 = sub(p1, p3), p43 = sub(p4, p3), p21 = sub(p2, p1);
+  if (Math.abs(p43[0]) < 0.01 && Math.abs(p43[1]) < 0.01 && Math.abs(p43[2]) < 0.01) return null;
+  if (Math.abs(p21[0]) < 0.001 && Math.abs(p21[1]) < 0.01 && Math.abs(p21[2]) < 0.01) return null;
+  const d1343 = dot(p13, p43), d4321 = dot(p43, p21), d1321 = dot(p13, p21), d4343 = dot(p43, p43), d2121 = dot(p21, p21);
+  const denom = d2121 * d4343 - d4321 * d4321;
+  if (Math.abs(denom) < 0.01) return null;
+  const mua = (d1343 * d4321 - d1321 * d4343) / denom, mub = (d1343 + d4321 * mua) / d4343;
+  const clamp = (v, a, b) => v.map((x, k) => Math.min(Math.max(a[k], b[k]), Math.max(Math.min(a[k], b[k]), x)));
+  return [clamp(add(p1, scale(p21, mua)), p1, p2), clamp(add(p3, scale(p43, mub)), p3, p4)];
+}
 
 // Where along a->b the segment first enters the padded box, or -1 if it misses.
 function segHitT(a, b, mn, mx, pad) {
@@ -1035,7 +1282,7 @@ export class Duel {
   constructor(world) {
     this.w = world;
     this.state = 'waiting';
-    this.timer = 0; this.round = 0; this.wins = {}; this.fighters = []; this.winner = null; this.last = null;
+    this.timer = 0; this.round = 0; this.wins = {}; this.results = []; this.fighters = []; this.winner = null; this.last = null;
     this.arena = null;
   }
 
@@ -1081,7 +1328,7 @@ export class Duel {
     const P = this.w.players.slice(0, 2);
     this.fighters = P.map((p) => p.id);
     this.wins = Object.fromEntries(P.map((p) => [p.id, 0]));
-    this.round = 0; this.winner = null;
+    this.round = 0; this.winner = null; this.results = [];
     this.startRound(true);
   }
 
@@ -1138,6 +1385,7 @@ export class Duel {
   endRound(winner, why) {
     const cv = this.w.cv;
     if (winner) this.wins[winner.id] = (this.wins[winner.id] || 0) + 1;
+    this.results.push(winner?.id ?? null);
     this.state = 'intermission';
     this.timer = cv.f('vs_duel_intermission_time');
     this.last = { winner: winner?.id ?? null, why };

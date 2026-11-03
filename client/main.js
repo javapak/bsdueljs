@@ -5,6 +5,9 @@ import { IN, animLayers } from '/shared/sim.js';
 import { entityMatrix, matMul, angleVectors, DEG, angleDiff, angleNorm } from '/shared/mathx.js';
 import { Renderer } from './render.js';
 import { FX } from './fx.js';
+import { createHud } from './hud.js';
+import { Audio } from './audio.js';
+import { parsePhy, Ragdoll } from '/shared/ragdoll.js';
 
 const $ = (id) => document.getElementById(id);
 const status = (s, err) => { $('status').textContent = s; $('status').className = err ? 'err' : ''; };
@@ -57,6 +60,10 @@ await R.loadWorld(bsp, (s) => status(`Loading ${info.map}: ${s}`));
 const fx = new FX(R, fetchGame, bsp);
 window.duelDebug.fx = fx;
 await fx.load();
+const audio = new Audio(fetchGame, info, bsp);
+window.duelDebug.audio = audio;
+if (params.has('vol')) audio.master = parseFloat(params.get('vol'));
+await audio.load();
 const charCache = new Map();
 async function loadChar(key) {
   if (charCache.has(key)) return charCache.get(key);
@@ -70,7 +77,8 @@ async function loadChar(key) {
     }
     const char = new Character(root, inc);
     const r = await R.loadCharacter(key, mdl, char);
-    return { ...r, gripBone: root.boneByName.get('sword_grip') };
+    const phy = await fetchGame(mdl.replace(/\.mdl$/i, '.phy'));
+    return { ...r, gripBone: root.boneByName.get('sword_grip'), phy: phy ? parsePhy(phy) : null };
   })();
   charCache.set(key, pr);
   return pr;
@@ -92,6 +100,8 @@ function connect() {
     else if (m.t === 'full') status('Server already has two players.', true);
     else if (m.t === 'snap') {
       snaps.push(m);
+      audio.onSnap(m, (key) => charCache.get(key)?._resolved?.char);
+      for (const p of m.players) audio.onCombo(p.id, p.ci ?? 0);
       if (snaps.length > 40) snaps.shift();
       const off = m.time - performance.now() / 1000;
       if (!clockOffset.set) { clockOffset.v = off; clockOffset.set = true; } else clockOffset.v += (off - clockOffset.v) * 0.05;
@@ -127,7 +137,8 @@ setInterval(() => {
 }, 15);
 
 // ------------------------------------------------------------ hud/events
-const STANCE = ['Balanced', 'Fast', 'Heavy', 'Air'];
+const duelHud = await createHud($('hud'), info);
+if (params.has('debug')) $('hud').classList.add('debug');
 let bannerUntil = 0;
 function banner(s, secs = 2) { $('banner').textContent = s; bannerUntil = performance.now() + secs * 1000; }
 function logLine(s) { const d = document.createElement('div'); d.textContent = s; $('log').append(d); while ($('log').children.length > 6) $('log').firstChild.remove(); setTimeout(() => d.remove(), 6000); }
@@ -149,6 +160,7 @@ function onEvent(e) {
     default:
   }
   fx.onEvent(e, snaps.at(-1)?.players);
+  audio.onEvent(e, snaps.at(-1)?.players, myId);
 }
 
 // ------------------------------------------------------------ pose + camera math
@@ -196,8 +208,16 @@ function poseOf(ci, an, inst, now) {
 function frameCharacter(p, ci, world) {
   let inst = instances.get(p.id);
   if (!inst) { inst = { bones: R.newBoneBuffer() }; instances.set(p.id, inst); }
-  const pose = poseOf(ci, p.an, inst, performance.now() / 1000);
-  const bones = ci.char.boneMatrices(pose, world);
+  const pose = inst.rag?.pose ?? poseOf(ci, p.an, inst, performance.now() / 1000);
+  // [R client.dll] the same spine lean the server's tracer uses; bb_tracer_pitchaiming_min, max
+  let bones = ci.char.boneMatrices(pose, world, { pitch: Math.max(-60, Math.min(40, p.p ?? 0)), yaw: p.y });
+  const now = performance.now() / 1000, dt = inst.lastBoneT ? now - inst.lastBoneT : 1 / 60;
+  inst.lastBoneT = now;
+  // A dead fighter is a ragdoll until the round restarts them
+  if (p.a?.n !== 'Kill') inst.rag = null;
+  else if (!inst.rag && ci.phy) { inst.rag = new Ragdoll(ci.char, ci.phy, bsp, pose, bones, inst.prevBones, dt, p.v ?? [0, 0, 0]); (window.duelDebug.rags ??= {})[p.id] = inst.rag; }
+  inst.prevBones = bones;
+  if (inst.rag) { inst.rag.step(Math.min(dt, 0.1)); bones = inst.rag.bones(world); }
   const data = inst.bones.data;
   const src = ci.char.bones;
   for (let i = 0; i < bones.length && i < 128; i++) data.set(matMul(bones[i], src[i].poseToBone), i * 12);
@@ -253,7 +273,7 @@ function bladeTris(out, world, gripBone, color) {
 // ------------------------------------------------------------ frame loop
 const norm3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
 let lastFrame = performance.now();
-let lastHud = 0, frames = 0, fpsT = performance.now(), fps = 0;
+let frames = 0, fpsT = performance.now(), fps = 0;
 const camHull = { mn: [-4, -4, -4], mx: [4, 4, 4] };
 async function tick() {
   requestAnimationFrame(tick);
@@ -274,6 +294,7 @@ async function tick() {
       if (!ci) { charCache.get(p.c)?.then((v) => { charCache.get(p.c)._resolved = v; }); continue; }
       const world = entityMatrix(p.o, [0, p.y, 0]);
       const fc = frameCharacter(p, ci, world);
+      R.lightCharacter(fc, p.o);
       const color = charColor(p.c);
       const st = fx.updatePlayer(p, ci.char, fc.world, ci.gripBone, color);
       setCharge(fc, st.charge, color);
@@ -302,35 +323,25 @@ async function tick() {
   fx.localPos = me?.o;
   fx.step(dt);
   const F = norm3([tgt[0] - eye[0], tgt[1] - eye[1], tgt[2] - eye[2]]), RT = norm3([F[1], -F[0], 0]), UP = [RT[1] * F[2] - RT[2] * F[1], RT[2] * F[0] - RT[0] * F[2], RT[0] * F[1] - RT[1] * F[0]];
+  audio.frame(eye, RT);
   const built = fx.build(eye, RT, UP, Math.tan(37.5 * DEG));
   R.frame({ vp, eye, characters, tris, fx: { verts: fx.verts, count: built.count, draws: built.draws } });
-  if (cur && now - lastHud > 66) { lastHud = now; hud(cur, me); }
+  if (cur) hud(cur, me);
   window.duelDebug.state = { snaps: snaps.length, myId, chars: characters.length, duel: cur?.snap?.duel, stats: R.stats, eye, me: me && { o: me.o, a: me.a, hp: me.hp, an: me.an } };
 }
+let lastHudAt = performance.now();
 function hud(cur, me) {
-  const d = cur.snap.duel;
-  const ordered = [...cur.players].sort((a, b) => (a.id === myId ? -1 : b.id === myId ? 1 : a.id - b.id));
-  [0, 1].forEach((i) => {
-    const p = ordered[i];
-    $('n' + i).textContent = p ? `${p.n}${d.w?.[p.id] != null ? `  (${d.w[p.id]})` : ''}` : (i ? 'Waiting for opponent…' : '');
-    $('h' + i).style.width = p ? `${Math.max(0, p.hp)}%` : '0%';
-  });
-  const lbl = { waiting: 'Waiting for opponent', warmup: 'Get ready', fight: 'Fight', intermission: 'Round over', cooldown: 'Match over' }[d.s] || d.s;
-  $('timer').textContent = d.s === 'waiting' ? '--' : Math.ceil(d.tm);
-  $('round').textContent = d.s === 'waiting' ? lbl : `Round ${d.r}, best of ${d.max} · ${lbl}`;
-  if (performance.now() > bannerUntil) $('banner').textContent = '';
-  if (me) {
-    $('stance').textContent = STANCE[me.st] ?? '';
-    const a = me.a;
-    $('act').textContent = a ? (a.ph === 'charge' ? `Charging tier ${(a.ct ?? 0) + 1}` : a.n) : me.kn ? 'Downed: Space get up, Mouse1 recovery attack, Mouse2 intercept, WASD roll' : (me.g ? '' : 'Airborne');
-    const pct = a?.ph === 'charge' ? [34, 67, 100][a.ct ?? 0] : 0;
-    document.querySelector('#charge i').style.width = pct + '%';
-  }
+  const now = performance.now(), dt = (now - lastHudAt) / 1000;
+  lastHudAt = now;
+  duelHud?.update(cur, me, myId, dt);
+  if (now > bannerUntil) $('banner').textContent = '';
+  $('hint').textContent = me?.kn && !me.a ? 'Downed: Space get up, Mouse1 recovery attack, Mouse2 intercept, WASD roll' : '';
   $('net').textContent = `${window.duelDebug.fps ?? 0} fps`;
 }
 requestAnimationFrame(tick);
 
 $('go').onclick = () => {
+  audio.start();
   $('menu').style.display = 'none';
   $('hud').style.display = 'block';
   loadChar($('char').value);

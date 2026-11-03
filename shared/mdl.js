@@ -471,13 +471,25 @@ export class Character {
     return seq._w;
   }
 
-  // Local pose -> model-to-world bone matrices (12-float rows).
-  boneMatrices(pose, world) {
+  // Local pose -> model-to-world bone matrices (12-float rows). aim leans the spine toward a pitch, in degrees.
+  boneMatrices(pose, world, aim = null) {
     const out = new Array(this.bones.length);
+    this._spine ??= ['valvebiped.bip01_spine', 'valvebiped.bip01_spine1', 'valvebiped.bip01_spine2'].map((n) => this.root.boneByName.get(n));
+    const spineOk = aim && aim.pitch !== 0 && this._spine.every((i) => i !== undefined);
+    const y = aim ? aim.yaw * Math.PI / 180 : 0, right = [Math.sin(y), -Math.cos(y), 0];
     for (let i = 0; i < this.bones.length; i++) {
       const b = this.bones[i];
       const local = quatMatrix(pose.Q[i], pose.P[i]);
       out[i] = b.parent < 0 ? matMul(world, local) : matMul(out[b.parent], local);
+      if (spineOk) {
+        // [R server 18038a004] 50%, 30% and 20% of the pitch, about the view's right axis in the bone's own frame
+        const k = this._spine.indexOf(i);
+        if (k >= 0) {
+          const m = out[i];
+          const axis = [-(m[0] * right[0] + m[4] * right[1] + m[8] * right[2]), m[1] * right[0] + m[5] * right[1] + m[9] * right[2], m[2] * right[0] + m[6] * right[1] + m[10] * right[2]];
+          out[i] = matMul(m, axisAngleMatrix(axis, -aim.pitch * SPINE_AIM[k]));
+        }
+      }
     }
     return out;
   }
@@ -487,6 +499,13 @@ export class Character {
     if (!a) return null;
     return matMul(bones[a.bone], a.local);
   }
+}
+
+const SPINE_AIM = [0.5, 0.3, 0.2];
+function axisAngleMatrix(v, degrees) {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1, x = v[0] / l, y = v[1] / l, z = v[2] / l;
+  const r = degrees * Math.PI / 180, s = Math.sin(r), c = Math.cos(r), t = 1 - c;
+  return [x * x * t + c, x * y * t - z * s, x * z * t + y * s, 0, y * x * t + z * s, y * y * t + c, y * z * t - x * s, 0, z * x * t - y * s, z * y * t + x * s, z * z * t + c, 0];
 }
 
 function quatMul(p, q) {
@@ -520,7 +539,9 @@ export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
   const V = (i) => (numFix ? remap[i] : i);
   const mdv = model.dv;
   const bpN = mdv.getInt32(232, true), bpI = mdv.getInt32(236, true);
-  const positions = [], normals = [], uvs = [], boneIdx = [], boneW = [], indices = [], meshes = [];
+  const tangentStart = vvd.getInt32(60, true);
+  const positions = [], normals = [], uvs = [], boneIdx = [], boneW = [], tangents = [], vhvMesh = [], vhvVert = [], indices = [], meshes = [];
+  let meshSerial = 0; // a baked .vhv lists every mesh of every sub-model, in order
   const vbp = vtx.getInt32(32, true);
   const nVtxBp = vtx.getInt32(28, true);
   if (nVtxBp !== bpN) throw new Error('vtx/mdl body part mismatch');
@@ -538,6 +559,11 @@ export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
       if (mdv.getInt32(o + 72, true) > 0) { chosen = m; break; }
     }
     const mo = mbp + modelIdx + chosen * 148;
+    const serialBase = meshSerial;
+    for (let m = 0; m < chosen; m++) meshSerial += 0;
+    let before = 0;
+    for (let m = 0; m < chosen; m++) before += mdv.getInt32(mbp + modelIdx + m * 148 + 72, true);
+    for (let m = 0; m < nModels; m++) meshSerial += mdv.getInt32(mbp + modelIdx + m * 148 + 72, true);
     const nMeshes = mdv.getInt32(mo + 72, true), meshIdx = mdv.getInt32(mo + 76, true);
     const modelVertStart = mdv.getInt32(mo + 84, true) / 48;
     const vm = vmOff + chosen * 8;
@@ -564,6 +590,9 @@ export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
           uvs.push(vvd.getFloat32(o + 40, true), vvd.getFloat32(o + 44, true));
           boneW.push(vvd.getFloat32(o, true), vvd.getFloat32(o + 4, true), vvd.getFloat32(o + 8, true));
           boneIdx.push(vvd.getUint8(o + 12), vvd.getUint8(o + 13), vvd.getUint8(o + 14));
+          const to = tangentStart + vi * 16;
+          tangents.push(vvd.getFloat32(to, true), vvd.getFloat32(to + 4, true), vvd.getFloat32(to + 8, true), vvd.getFloat32(to + 12, true));
+          vhvMesh.push(serialBase + before + me); vhvVert.push(orig);
         }
         for (let i = 0; i < ni; i++) indices.push(base + vtx.getUint16(io + i * 2, true));
       }
@@ -578,6 +607,6 @@ export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
   void lod0;
   return {
     positions: new Float32Array(positions), normals: new Float32Array(normals), uvs: new Float32Array(uvs),
-    boneIdx: new Uint8Array(boneIdx), boneW: new Float32Array(boneW), indices: new Uint32Array(indices), meshes,
+    boneIdx: new Uint8Array(boneIdx), boneW: new Float32Array(boneW), tangents: new Float32Array(tangents), vhvMesh: new Int32Array(vhvMesh), vhvVert: new Int32Array(vhvVert), indices: new Uint32Array(indices), meshes,
   };
 }

@@ -35,7 +35,7 @@ export function parseVTF(buf, maxSize = 1024) {
   }
   let start = 0;
   while (start < mips - 1 && (levels[start].w > maxSize || levels[start].h > maxSize)) start++;
-  return { w: levels[start].w, h: levels[start].h, fmt, levels: levels.slice(start).filter((l) => l), buf, translucent: (flags & 0x3000) !== 0, flags, sheet: sheetOff >= 0 ? parseSheet(dv, sheetOff) : null };
+  return { w: levels[start].w, h: levels[start].h, fmt, levels: levels.slice(start).filter((l) => l), buf, translucent: (flags & 0x3000) !== 0, flags, faces, sheet: sheetOff >= 0 ? parseSheet(dv, sheetOff) : null };
 }
 // Sprite sheet resource: sequences of timed frames, each a UV rectangle (version 1 stores 4 per frame)
 function parseSheet(dv, off) {

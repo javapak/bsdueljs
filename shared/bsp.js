@@ -99,9 +99,11 @@ export class BSP {
     const ns = l.len / 8;
     this.sidePlane = new Uint16Array(ns);
     this.sideBevel = new Uint8Array(ns);
+    this.sideTexinfo = new Int16Array(ns);
     for (let i = 0; i < ns; i++) {
       const o = l.off + i * 8;
       this.sidePlane[i] = dv.getUint16(o, true);
+      this.sideTexinfo[i] = dv.getInt16(o + 2, true);
       this.sideBevel[i] = dv.getUint8(o + 6);
     }
     this.brushStamp = new Uint32Array(nb);
@@ -244,6 +246,7 @@ export class BSP {
       const fp = this.faces[di.mapFace].plane;
       const fsign = this.faces[di.mapFace].side ? -1 : 1;
       const fn = [this.planeN[fp * 3] * fsign, this.planeN[fp * 3 + 1] * fsign, this.planeN[fp * 3 + 2] * fsign];
+      this._dispTexinfo = this.faces[di.mapFace].texinfo;
       const P = (i) => [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]];
       for (let y = 0; y < size - 1; y++) {
         for (let x = 0; x < size - 1; x++) {
@@ -300,7 +303,7 @@ export class BSP {
       planes.push({ n: pos, d: maxs[k] + Math.max(0, -back) });
       planes.push({ n: neg, d: -mins[k] + Math.max(0, back) });
     }
-    this.dispTris.push({ planes, mins, maxs });
+    this.dispTris.push({ planes, mins, maxs, texinfo: this._dispTexinfo });
   }
 
   // ---------------------------------------------------------------- tracing
@@ -311,7 +314,7 @@ export class BSP {
     const t = {
       s: [start[0] + off[0], start[1] + off[1], start[2] + off[2]],
       e: [end[0] + off[0], end[1] + off[1], end[2] + off[2]],
-      ext, mask, fraction: 1, normal: [0, 0, 0], startsolid: false, allsolid: false, contents: 0,
+      ext, mask, fraction: 1, normal: [0, 0, 0], startsolid: false, allsolid: false, contents: 0, texinfo: -1,
       isPoint: ext[0] === 0 && ext[1] === 0 && ext[2] === 0,
     };
     this.stamp = (this.stamp + 1) >>> 0;
@@ -319,7 +322,7 @@ export class BSP {
     this._traceDisp(t);
     const fr = t.fraction;
     return {
-      fraction: fr, startsolid: t.startsolid, allsolid: t.allsolid, normal: t.normal, contents: t.contents,
+      fraction: fr, startsolid: t.startsolid, allsolid: t.allsolid, normal: t.normal, contents: t.contents, texinfo: t.texinfo,
       endpos: [start[0] + (end[0] - start[0]) * fr, start[1] + (end[1] - start[1]) * fr, start[2] + (end[2] - start[2]) * fr],
       hit: fr < 1 || t.startsolid,
     };
@@ -377,7 +380,7 @@ export class BSP {
   }
 
   _clipBrush(b, t) {
-    let enter = -1, leave = 1, hn = -1, getout = false, startout = false;
+    let enter = -1, leave = 1, hn = -1, hs = -1, getout = false, startout = false;
     const first = this.brushFirst[b], num = this.brushNum[b];
     const { s, e, ext } = t;
     for (let i = 0; i < num; i++) {
@@ -394,7 +397,7 @@ export class BSP {
       if (d1 <= 0 && d2 <= 0) continue;
       if (d1 > d2) {
         const f = (d1 - DIST_EPSILON) / (d1 - d2);
-        if (f > enter) { enter = f; hn = pl; }
+        if (f > enter) { enter = f; hn = pl; hs = si; }
       } else {
         const f = (d1 + DIST_EPSILON) / (d1 - d2);
         if (f < leave) leave = f;
@@ -409,6 +412,7 @@ export class BSP {
       t.fraction = Math.max(0, enter);
       t.normal = [this.planeN[hn * 3], this.planeN[hn * 3 + 1], this.planeN[hn * 3 + 2]];
       t.contents = this.brushContents[b];
+      t.texinfo = this.sideTexinfo[hs];
     }
   }
 
@@ -456,6 +460,7 @@ export class BSP {
       t.fraction = Math.max(0, enter);
       t.normal = hn;
       t.contents = CONTENTS_SOLID;
+      t.texinfo = tri.texinfo;
     }
   }
 
