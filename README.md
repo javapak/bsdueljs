@@ -1,6 +1,6 @@
 # Blade Symphony Duel: standalone server and client
 
-A new, dependency-free reimplementation of duel mode. The Node server runs an authoritative 66-tick
+A new, dependency-free reimplementation of duel mode. The Node server runs an authoritative 64-tick
 simulation; the browser client renders with WebGPU. All assets and scripts are read at runtime from
 your own install, and nothing from the game is copied here except `shared/cvars_all.json`, a table of
 cvar names, defaults and help text extracted from `server.dll`.
