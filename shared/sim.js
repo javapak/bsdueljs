@@ -7,7 +7,7 @@ import { actionId, STANCE_KEYS } from './gamedata.js';
 import { angleVectors, add, sub, scale, dot, cross, len, norm, entityMatrix, angleNorm, approachAngle, matPoint } from './mathx.js';
 import { MASK_PLAYERSOLID } from './bsp.js';
 
-export const TICK = 1 / 66;
+export const TICK = 1 / 64;
 // [R 18037b1eb] the player reset sets the entity gravity field to 3, multiplying sv_gravity
 const PLAYER_GRAVITY_SCALE = 3;
 // [R 18037b470] these presses are remembered; a new one replaces the old. The time is the client's bb_ibt default.
