@@ -906,9 +906,9 @@ export class World {
     p.vel[1] += as * wish[1];
   }
 
-  // [R 18036d710] air drag keeps bb_air_drag of horizontal speed per 1/66s, then a small capped acceleration
+  // [R 18036d710] air drag keeps bb_air_drag of horizontal speed per 1/64s, then a small capped acceleration
   airAccelerate(p, wish, wishSpeed, dt) {
-    const drag = Math.pow(num(p.act?.def?.air_drag_scale, this.cv.f('bb_air_drag')), dt * 66);
+    const drag = Math.pow(num(p.act?.def?.air_drag_scale, this.cv.f('bb_air_drag')), dt * 64);
     p.vel[0] *= drag;
     p.vel[1] *= drag;
     const capped = Math.min(wishSpeed, 30);
