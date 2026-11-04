@@ -235,7 +235,10 @@ fn csmShadow(w: vec3f) -> f32 {
 // ctl: mask from base alpha, mask from luminance, exponent override, invert mask. rim: phong, rimlight, rim boost, rim mask.
 // has: diffuse warp, specular warp, envmap, albedo tint. misc: selfillum, unlit.
 // misc also: non-phong mask (1 normal alpha, 2 inverted base alpha), contrast. ext: saturation.
-struct M { tint: vec4f, fres: vec4f, env: vec4f, spec: vec4f, ctl: vec4f, rim: vec4f, has: vec4f, misc: vec4f, ext: vec4f };
+// uvBase, uvBump: $basetexturetransform and $bumptransform, two rows each. The exponent map follows the base's.
+struct M { tint: vec4f, fres: vec4f, env: vec4f, spec: vec4f, ctl: vec4f, rim: vec4f, has: vec4f, misc: vec4f, ext: vec4f, uvBase: array<vec4f, 2>, uvBump: array<vec4f, 2> };
+fn baseUv(uv: vec2f) -> vec2f { let p = vec3f(uv, 1); return vec2f(dot(m.uvBase[0].xyz, p), dot(m.uvBase[1].xyz, p)); }
+fn bumpUv(uv: vec2f) -> vec2f { let p = vec3f(uv, 1); return vec2f(dot(m.uvBump[0].xyz, p), dot(m.uvBump[1].xyz, p)); }
 @group(1) @binding(0) var t0: texture_2d<f32>;
 @group(1) @binding(1) var specWarp: texture_2d<f32>;
 @group(1) @binding(2) var diffWarp: texture_2d<f32>;
@@ -274,8 +277,8 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) n: 
 }
 // [R phong_ps30, baked vertex lighting] three colors along the bump basis. No world lights reach it, so no phong highlight.
 @fragment fn fs(i: O) -> @location(0) vec4f {
-  let c = textureSample(t0, samp, i.uv); if (c.a < CUT) { discard; }
-  let nt = textureSample(normalMap, samp, i.uv);
+  let c = textureSample(t0, samp, baseUv(i.uv)); if (c.a < CUT) { discard; }
+  let nt = textureSample(normalMap, samp, bumpUv(i.uv));
   if (m.misc.y > 0.0) { return finish(c.rgb); }
   let ts = nt.xyz * 2.0 - 1.0;
   var dp = vec3f(saturate(dot(ts, vec3f(0.816496611, 0, 0.577350259))), saturate(dot(ts, vec3f(-0.408248335, 0.707106769, 0.577350259))), saturate(dot(ts, vec3f(-0.408248216, -0.707106829, 0.577350259))));
@@ -338,9 +341,9 @@ fn ambient(n: vec3f) -> vec3f {
 }
 // [R phong_ps30, dynamic lights]
 @fragment fn fs(i: O) -> @location(0) vec4f {
-  let c0 = textureSample(t0, samp, i.uv); if (c0.a < CUT) { discard; }
-  let nt = textureSample(normalMap, samp, i.uv);
-  let ex = textureSample(specExp, samp, i.uv);
+  let c0 = textureSample(t0, samp, baseUv(i.uv)); if (c0.a < CUT) { discard; }
+  let nt = textureSample(normalMap, samp, bumpUv(i.uv));
+  let ex = textureSample(specExp, samp, baseUv(i.uv));
   // [R phong_ps30, proxy client.dll 1802b1350] $phongexponenttintmaskenable: the exponent texture's blue is how much of the
   // base becomes its own brightness in the fighter's color; below 0.01 it's left alone
   var c = c0;
@@ -547,6 +550,14 @@ function tangents(ti, n) {
   return [dot3(cross3(sv, tv), n) < 0 ? S.map((c) => -c) : S, T];
 }
 // "[r g b]" is 0..1, "{r g b}" is 0..255, and a bare number fills all three
+// "center x y scale x y rotate r translate x y" as Source composes it: to the center, scale, rotate, then back and across.
+function uvTransform(v) {
+  const n = (k, def) => { const m = new RegExp(`${k}\\s+(-?[\\d.]+)\\s+(-?[\\d.]+)`, 'i').exec(String(v ?? '')); return m ? [+m[1], +m[2]] : def; };
+  const [cx, cy] = n('center', [0.5, 0.5]), [sx, sy] = n('scale', [1, 1]), [tx, ty] = n('translate', [0, 0]);
+  const r = (parseFloat(/rotate\s+(-?[\d.]+)/i.exec(String(v ?? ''))?.[1]) || 0) * Math.PI / 180, cs = Math.cos(r), sn = Math.sin(r);
+  return [sx * cs, -sy * sn, -cx * sx * cs + cy * sy * sn + cx + tx, 0, sx * sn, sy * cs, -cx * sx * sn - cy * sy * cs + cy + ty, 0];
+}
+
 function vmtColor(v, def) {
   if (v === undefined) return def;
   const n = String(v).match(/-?[\d.]+(?:e-?\d+)?/gi)?.map(Number);
@@ -1298,7 +1309,9 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
     const [specWarp, diffWarp, normal, exp] = await Promise.all([tex(p.$phongwarptexture), tex(p.$lightwarptexture), tex(p.$bumpmap ?? p.$normalmap, true), tex(p.$phongexponenttexture, true)]);
     const ranges = vmtColor(p.$phongfresnelranges, [0, 0.5, 1]), tint = vmtColor(p.$color2 ?? p.$color, [1, 1, 1]).map(gammaToLinear), envTint = vmtColor(p.$envmaptint, [1, 1, 1]).map(gammaToLinear);
     const phongTint = p.$phongtint !== undefined ? vmtColor(p.$phongtint, [1, 1, 1]) : [-1, -1, -1];
-    const u = d.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const u = d.createBuffer({ size: 208, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // [R stdshader_dx9 180035f7b] the normal map takes the base's transform unless it has its own
+    const uvBase = uvTransform(p.$basetexturetransform), uvBump = p.$bumptransform !== undefined ? uvTransform(p.$bumptransform) : uvBase;
     d.queue.writeBuffer(u, 0, new Float32Array([
       ...tint, 1,
       ...ranges, f('$phongboost', 1),
@@ -1308,7 +1321,8 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
       phong ? 1 : 0, on(p.$rimlight) ? 1 : 0, f('$rimlightboost', 1), on(p.$rimmask) ? 1 : 0,
       diffWarp ? 1 : 0, specWarp ? 1 : 0, envName ? 1 : 0, on(p.$phongalbedotint) ? 1 : 0,
       on(p.$selfillum) ? 1 : 0, /^unlit/.test(vm?.shader ?? '') ? 1 : 0, on(p.$normalmapalphaenvmapmask) ? 1 : on(p.$basealphaenvmapmask) ? 2 : 0, f('$envmapcontrast', 0),
-      f('$envmapsaturation', 1), on(p.$phongexponenttintmaskenable) && exp ? 1 : 0, 0, 0]));
+      f('$envmapsaturation', 1), on(p.$phongexponenttintmaskenable) && exp ? 1 : 0, 0, 0,
+      ...uvBase, ...uvBump]));
     return d.createBindGroup({ layout: this.gModelMat, entries: [base, specWarp || this.white, diffWarp || this.white, normal || this.flatNormal, exp || this.noExp].map((t, binding) => ({ binding, resource: t.createView() })).concat({ binding: 5, resource: { buffer: u } }) });
   }
 
