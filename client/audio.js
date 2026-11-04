@@ -190,6 +190,7 @@ export class Audio {
       this.layer(t, 'b', p, char, p.an.b, p.an.bc);
       this.layer(t, 'u', p, char, p.an.u, p.an.uc);
       this.layer(t, 't', p, char, p.an.tl?.[0], p.an.tl?.[1]);
+      this.layer(t, 's', p, char, p.an.sh?.[0], p.an.sh?.[1]);
     }
   }
 

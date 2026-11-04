@@ -375,6 +375,20 @@ export class Model {
     this.sampleAnim(this.animDesc(this.seqAnimIndex(this.seqs[0], 0, 0)), 0, pos, quat);
     return (this._idlePose = this._poseFrom(pos, quat));
   }
+
+  /**
+   * The same for a moment of the sequence with an activity, for the few swords that animate.
+   * @param {string} act Activity.
+   * @param {number} cycle Where in it, 0 to 1.
+   * @returns {{local: number[][], world: number[][]}|null} The pose, or null if no sequence has that activity.
+   */
+  activityPose(act, cycle) {
+    const seq = this.seqs.find((s) => s.activity === act);
+    if (!seq) return null;
+    const pos = this.bones.map((b) => b.pos), quat = this.bones.map((b) => b.quat);
+    this.sampleAnim(this.animDesc(this.seqAnimIndex(seq, 0, 0)), cycle, pos, quat);
+    return this._poseFrom(pos, quat);
+  }
 }
 
 /**

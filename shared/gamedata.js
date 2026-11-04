@@ -129,7 +129,7 @@ export class GameData {
     }
     // every sword in the item catalog, by its type's script name
     d.swordItems = items.filter((i) => i.item_type === 'sword' && d.swordTypes[String(i.sword_type).toLowerCase()]).map((i) => ({
-      id: i.itemdefid, name: i.name, type: String(i.sword_type).toLowerCase(), model: i.model, scabbard: i.scabbard_model ?? null, skin: parseInt(i.skin ?? '0', 10) || 0,
+      id: i.itemdefid, name: i.name, type: String(i.sword_type).toLowerCase(), model: i.model, scabbard: i.scabbard_model ?? null, hip: i.scabbard_attach_hip === 'true', skin: parseInt(i.skin ?? '0', 10) || 0,
       swing: i.custom_swing_sound ?? null, swingVol: parseFloat(i.swing_blend_vol ?? '1'), hit: i.custom_hit_sound ?? null, hitVol: parseFloat(i.hit_blend_vol ?? '1'),
     }));
     // what a fighter can wear: the skin family, a mask, a cape, one attachment per slot. Attachments are either a

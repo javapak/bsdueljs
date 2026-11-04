@@ -24,7 +24,7 @@ can reach the port can download files from your game folder. It has no authentic
 
 Controls: WASD move (also picks the attack direction), Mouse1 attack (hold to charge), Mouse2 block,
 1/2/3 fast/balanced/heavy, Space jump, Ctrl roll, Shift shuffle, Q grab (press while grabbed to break free), Alt walk.
-E throw, R join or leave the queue, M customize, Tab scoreboard. These follow the game's `cfg/config_default.cfg`.
+E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue, M customize, Tab scoreboard. These follow the game's `cfg/config_default.cfg`.
 
 ## Layout
 
@@ -57,6 +57,7 @@ E throw, R join or leave the queue, M customize, Tab scoreboard. These follow th
 | `node tests/dash_check.mjs "<install>"` | the charge dash: when it's allowed, what it does, and the vulnerable time after it |
 | `node tests/preview_check.mjs "<install>"` | the attack preview: the attack it names, its path, fades and target highlight |
 | `node tests/wall_check.mjs "<install>"` | wall run, slide, wall jump and run limit, plus throwables: timing, hits, blocks, cancel and delay |
+| `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
 | `node tests/net_check.mjs "<install>"` | full match between two real WebSocket clients; path traversal rejected |
 | `PWDIR=<playwright dir> node tests/browser_match.mjs "<url>?nolock=1&ready=1" <prefix>` | full match in a browser with real key and mouse events |
@@ -128,15 +129,19 @@ charge and swing flow, tracer sampling and its clock, blade pose (move params, p
 
 **Throwables:** `E` throws the character's type from `scripts/throwabletypes.txt`. Flight, homing, damage and blocks follow `server.dll`; the star's lead on a moving target is a simple estimate, and blades don't deflect it in the air yet (`bounds_tracer`). It plays the model's own `ACT_FLY` tumble at the model's size, since the game never reads the script's `scale` key. That its +X points along the flight is inferred, and decals aren't drawn.
 
+**Gestures:** bow, flourish, taunt and sit follow `server.dll`: they start once no lock is running and repeat while held, flourish and taunt play the stance's animation, and sitting holds the sit down's last frame until a move key or one of the buttons the game lists (not roll, shuffle or throw, which act from the seat as they would from standing). Bow, flourish and taunt lock movement and turning. Taunt and bow leave a sword sheathed; flourish draws it at once.
+
+**Sheathing:** `4` puts the sword away or draws it, as an upper layer, so you can keep moving. The time is always the back animation's, on any sword, and a hip sword's animation is fitted to it, which follows a remote client's view; the live game may predict the local fighter's differently [I]. During it you can't roll, grab, wall run, block, throw or gesture, though you can shuffle. An attack or feint draws at once, cutting it off. Sheathed you can't block, and run on the plain `ACT_IDLE`, `ACT_WALK` and `ACT_RUN` cycles. That the duel isn't one of the two modes with the sprint cycle and sheathed damage multiplier is inferred from their help text. The item's `scabbard_attach_hip` picks the fighter's `anim_sheathe_hip` or `anim_sheathe_back`. The scabbard's `anim_sheathe` always sits there, and the sword's `sword_grip` does too once it's all the way in; the animations end there, within a unit. Three swords play their own sheathe sequences, timed by the fighter's layer here [I]. `custom_sheathe_sound` isn't played.
+
 **Ragdolls:** bodies, masses, damping and joint limits are the model's `.phy`, but the solver is `shared/ragdoll.js`, not Havok, so how a body falls is approximate, and it collides with the world only, as capsules.
 
 **Not implemented:** client-side prediction (fine on LAN, will feel laggy over the internet), music,
-ledge climbing and vaulting, sheathing, 3D skybox.
+ledge climbing and vaulting, 3D skybox.
 
 **Shaders:** world surfaces are ported from `lightmappedgeneric_ps30` (bumped and self-shadowed lightmaps, cubemaps, seamless mapping) and the sky from `sky_ps20b`. Exposure follows the game's histogram rule (`shared/exposure.js`), with each map's `env_tonemap_controller` limits. Sun shadows are the game's cascaded shadow maps (three cascades to 400 units, split as in `client.dll`), which take the sun's share out of the lightmap using the per-page bytes each map stores. How a cascade blends at its edge, fade distance and bias are approximate. Still missing on the world: bloom, `$blendmodulatetexture`, `$phong`, `$lightwarptexture` and detail blend modes other than mod2x; unpatched `env_cubemap` uses the map's default cubemap. Characters use `phong_ps30` with the map's ambient cubes and world lights; static props use their baked `.vhv` colors with `phong_ps30` or `vertexlit_and_unlit_generic_bump_ps30`. Which lights a model keeps follows Source's usual rules rather than a read of the engine. `lightmappedreflective` surfaces aren't ported.
 
 **Swords:** any character can use any sword from the game's catalog (`scripts/items.json`), chosen on the join menu, which starts on the one the game
-gives that character. The sword and its scabbard are the item's own models and skin, following the fighter's bones of the same names, with any other bones at the first frame of the model's first sequence [I]; a scabbard always stays on the body, since sheathing isn't built, and additive parts such as glows aren't drawn. The type sets damage, charge, multi-hit rate and block tech: longsword and
+gives that character. The sword and its scabbard are the item's own models and skin. The sword follows the fighter's `sword_grip`, with any other bones at the first frame of the model's first sequence [I]; a scabbard always stays on the body, on the mount under Sheathing, and additive parts such as glows aren't drawn. The type sets damage, charge, multi-hit rate and block tech: longsword and
 scimitar block, foil guards, jian intercepts. Katana feints: the block button charges the swing the stance and string would give, and letting go plays it with no tracer on a cut lock. It can also cut off a swing before its second blade sample or just after its last, which carries on the same animation with the time spent taken off that cut lock. Every feint restarts the string. Blade
 length is the game's default 40 units for all types.
 

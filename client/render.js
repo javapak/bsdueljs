@@ -1449,26 +1449,36 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
    * @param {object} fc The fighter's frame data, from frameCharacter.
    * @param {object} part The part. With `held`, its own bones use idlePose rather than the reference pose.
    * @param {Character} char The fighter's character.
+   * @param {object} [sword] For a sword or scabbard, from swordState.
    */
-  attachTo(fc, part, char) {
+  attachTo(fc, part, char, sword = null) {
     const { model } = part.mesh, out = new Array(model.bones.length), data = part.bones.data;
-    const pose = part.held ? model.idlePose() : model.refPose();
+    const pose = part.held ? (sword && model.activityPose(sword.act, sword.cycle)) ?? model.idlePose() : model.refPose();
     let matched = false;
+    // [R client 1802c6e68, 1802c7a00] All the way in, the sword's sword_grip sits on the mount
+    const point = sword && char.root.attachments.find((a) => a.name === sword.mount);
+    const mountWorld = point && matMul(fc.world[point.bone], point.local);
+    const boneWorld = (name, hit) => (sword?.sheathed && point && name === 'sword_grip' ? mountWorld : fc.world[hit]);
+    // [R client 180384583, 1802c6322] A scabbard's anim_sheathe sits on the same mount, whichever bone it's named for
+    const socket = part.held && point && model.attachments.find((a) => a.name === 'anim_sheathe');
+    const mountSpace = socket ? matMul(mountWorld, rigidInverse(matMul(pose.world[socket.bone], socket.local))) : null, mounted = socket ? matMul(mountSpace, pose.world[0]) : null;
+    if (mounted) matched = true;
     // where the model's own space lands: a root the fighter doesn't have stays rigid with the bones it does
-    let rigid = null;
+    let rigid = mountSpace;
     model.bones.forEach((b, i) => {
       const hit = char.root.boneByName.get(b.name.toLowerCase());
-      if (hit !== undefined && !rigid) { rigid = matMul(fc.world[hit], rigidInverse(pose.world[i])); matched = true; }
+      if (hit !== undefined && !rigid) { rigid = matMul(boneWorld(b.name.toLowerCase(), hit), rigidInverse(pose.world[i])); matched = true; }
     });
-    // A cape hangs from the fighter's attachment of the same name [client.dll 180383a49], which sits off the bone
+    // A cape hangs from the fighter's attachment of the same name [client.dll 180383a49], which sits off the bone. Ten swords
+    // also name those attachments, but nothing places a sword by them.
     const own = model.attachments.find((a) => /^anim_/.test(a.name)), theirs = own && char.root.attachments.find((a) => a.name === own.name);
-    const anchor = theirs && own.bone === 0 ? matMul(matMul(fc.world[theirs.bone], theirs.local), rigidInverse(own.local)) : null;
+    const anchor = theirs && own.bone === 0 && !part.held ? matMul(matMul(fc.world[theirs.bone], theirs.local), rigidInverse(own.local)) : null;
     part.jiggle ??= new JiggleBones(jiggleInfo(model));
     const now = performance.now() / 1000;
     model.bones.forEach((b, i) => {
       const hit = char.root.boneByName.get(b.name.toLowerCase());
-      if (i === 0 && anchor) out[i] = anchor;
-      else if (hit !== undefined) out[i] = fc.world[hit];
+      if (i === 0 && (mounted || anchor)) out[i] = mounted ?? anchor;
+      else if (hit !== undefined && !mounted) out[i] = boneWorld(b.name.toLowerCase(), hit);
       else if (b.parent >= 0 && out[b.parent]) {
         const goal = matMul(out[b.parent], pose.local[i]);
         out[i] = part.jiggle.info.has(i) ? part.jiggle.update(i, now, goal) : goal;

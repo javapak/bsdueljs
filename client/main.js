@@ -132,7 +132,7 @@ let didInitCam = false, frozen = false;
 // ------------------------------------------------------------ input
 const keys = new Set();
 let mouse = 0;
-const KEYMAP = { KeyE: IN.THROW, KeyW: IN.FORWARD, KeyS: IN.BACK, KeyA: IN.LEFT, KeyD: IN.RIGHT, Space: IN.JUMP, ControlLeft: IN.ROLL, ControlRight: IN.ROLL, ShiftLeft: IN.SHUFFLE, ShiftRight: IN.SHUFFLE, KeyQ: IN.GRAB, AltLeft: IN.WALK, Digit1: IN.STANCE_FAST, Digit2: IN.STANCE_BAL, Digit3: IN.STANCE_HEAVY };
+const KEYMAP = { KeyE: IN.THROW, KeyW: IN.FORWARD, KeyS: IN.BACK, KeyA: IN.LEFT, KeyD: IN.RIGHT, Space: IN.JUMP, ControlLeft: IN.ROLL, ControlRight: IN.ROLL, ShiftLeft: IN.SHUFFLE, ShiftRight: IN.SHUFFLE, KeyQ: IN.GRAB, AltLeft: IN.WALK, Digit1: IN.STANCE_FAST, Digit2: IN.STANCE_BAL, Digit3: IN.STANCE_HEAVY, Digit4: IN.SHEATHE, KeyB: IN.BOW, KeyC: IN.FLOURISH, KeyV: IN.TAUNT, KeyT: IN.SIT };
 addEventListener('keydown', (e) => {
   // bb_show_customization: M opens it in a match, and it takes over the screen and the keys until it closes
   if (customize.open) { if (e.code === 'Escape' && started) closeCustomize(); return; }
@@ -259,6 +259,18 @@ function swordParts(p) {
   if (!inst) return null;
   if (inst.swordItem !== p.it) { inst.swordItem = p.it; inst.swordParts = null; loadSwordParts(p.it).then((list) => { if (inst.swordItem === p.it) inst.swordParts = list.map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true, held: true })); }); }
   return inst.swordParts;
+}
+/**
+ * [R client 1802c79ec, 1802c7685] Where the sword's mount is, whether it's on it or in the hand until all the way in, and
+ * the sequence for the few swords that animate. [I] the sheathe and draw follow the fighter's layer rather than their own clock.
+ * @param {object} p A fighter from the snapshot.
+ * @returns {{mount: string, sheathed: boolean, act: string, cycle: number}} Its state.
+ */
+function swordState(p) {
+  const mount = info.swordItems.find((i) => i.id === p.it)?.hip ? 'anim_sheathe_hip' : 'anim_sheathe_back';
+  const sh = p.an?.sh, moving = sh && sh[1] < 1 && !sh[0].endsWith('_GRIP');
+  const act = p.shd ? 'ACT_BB_SWORD_IDLE_SHEATHED' : moving ? (sh[0].includes('_UNSHEATHE_') ? 'ACT_BB_SWORD_UNSHEATHE' : 'ACT_BB_SWORD_SHEATHE') : 'ACT_BB_SWORD_IDLE';
+  return { mount, sheathed: !!p.shd, act, cycle: moving ? sh[1] : 0 };
 }
 function loadSwordParts(id) {
   if (!swordMeshes.has(id)) {
@@ -422,8 +434,8 @@ function interpolated(time) {
   const t = b.time > a.time ? Math.max(0, Math.min(1, (time - a.time) / (b.time - a.time))) : 1;
   return { snap: b, players: b.players.map((pb) => {
     const pa = a.players.find((x) => x.id === pb.id) || pb;
-    const cyc = (x, y, same) => { if (!same) return y; let d = y - x; if (d < -0.5) d += 1; return (x + d * t + 1) % 1; };
-    const an = { ...pb.an, mx: lerp(pa.an.mx, pb.an.mx, t), my: lerp(pa.an.my, pb.an.my, t), bc: cyc(pa.an.bc, pb.an.bc, pa.an.b === pb.an.b), uc: cyc(pa.an.uc, pb.an.uc, pa.an.u === pb.an.u) };
+    const cyc = (x, y, same) => { if (!same) return y; let d = y - x; if (d < -0.5) d += 1; const v = x + d * t; return v > 1 ? v - 1 : v; }; // a cycle held at 1 stays there
+    const an = { ...pb.an, mx: lerp(pa.an.mx, pb.an.mx, t), my: lerp(pa.an.my, pb.an.my, t), bc: cyc(pa.an.bc, pb.an.bc, pa.an.b === pb.an.b), uc: cyc(pa.an.uc, pb.an.uc, pa.an.u === pb.an.u), sh: pb.an.sh && pa.an.sh?.[0] === pb.an.sh[0] ? [pb.an.sh[0], lerp(pa.an.sh[1], pb.an.sh[1], t), lerp(pa.an.sh[2], pb.an.sh[2], t)] : pb.an.sh };
     return { ...pb, an, o: [lerp(pa.o[0], pb.o[0], t), lerp(pa.o[1], pb.o[1], t), lerp(pa.o[2], pb.o[2], t)], y: pa.y + angleDiff(pb.y, pa.y) * t };
   }) };
 }
@@ -497,7 +509,7 @@ function previewFrame(time) {
     parts.push(fc);
     for (const part of look) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
     const held = swordParts(p);
-    if (held) for (const part of held) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
+    if (held) for (const part of held) { R.attachTo(fc, part, c, swordState(p)); if (part.shown) parts.push(part); }
     const list = customize.list, at = Math.max(0, list.indexOf(customize.sword));
     for (let i = 0; i < WHEEL.slots; i++) {
       const part = wheelPart(i, list[(at + (i - WHEEL.middle) + list.length * 12) % list.length]);
@@ -618,7 +630,7 @@ async function tick() {
         if (part && att) { holdStar(part, matMul(fc.world[att.bone], att.local), p.o); attached.push(part); }
       }
       const held = swordParts(p);
-      if (held) for (const part of held) { R.attachTo(fc, part, ci.char); if (part.shown) attached.push(part); }
+      if (held) for (const part of held) { R.attachTo(fc, part, ci.char, swordState(p)); if (part.shown) attached.push(part); }
       else bladeTris(tris, fc.world, ci.gripBone, p.a?.ph === 'swing' ? [1, 0.95, 0.7, 1] : [0.85, 0.87, 0.92, 1]);
     }
     starsFrame(cur, renderTime, attached);

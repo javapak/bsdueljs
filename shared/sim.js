@@ -45,7 +45,9 @@ function jumpGravityEase(n, bias, sharpness) {
   const gain = x < 0.5 ? 0.5 * b(2 * x) : 1 - 0.5 * b(2 - 2 * x);
   return (1 - Math.cos(gain * Math.PI)) * 0.5;
 }
-export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0x200, RIGHT: 0x400, THROW: 0x800, GRAB: 0x20000, WALK: 0x40000, SHUFFLE: 0x400000, BLOCK: 0x800000, STANCE_FAST: 0x2000000, STANCE_BAL: 0x4000000, STANCE_HEAVY: 0x8000000 };
+export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0x200, RIGHT: 0x400, THROW: 0x800, GRAB: 0x20000, WALK: 0x40000, SHUFFLE: 0x400000, BLOCK: 0x800000, STANCE_FAST: 0x2000000, STANCE_BAL: 0x4000000, STANCE_HEAVY: 0x8000000, SHEATHE: 0x8000, FLOURISH: 0x80000, TAUNT: 0x200000, SIT: 0x10000000, BOW: 0x20000000 }; // the game's +bow is 0x2000000, which STANCE_FAST holds here
+// [R 18034ce17] 0x13aa0003, without +spraypaint: any of these, or any move input, stands a sitting fighter up
+const STAND_BUTTONS = IN.ATTACK | IN.JUMP | IN.GRAB | IN.FLOURISH | IN.TAUNT | IN.BLOCK | IN.BOW | IN.SIT, MOVE_BUTTONS = IN.FORWARD | IN.BACK | IN.LEFT | IN.RIGHT;
 const HULL_MIN = [-13, -13, 0], HULL_MAX = [13, 13, 72];
 const STEP = 18;
 const SURF_SKY_FLAG = 4, SURF_NODRAW_FLAG = 0x80, CONTENTS_WALLRUN = 0x80000;
@@ -112,6 +114,7 @@ export class Player {
       kneeling: false, airState: 0, airT: 0, landT: 0, landCycle: 0, airLandCycle: 0, moveCycle: 0, moveSeq: null, chargeCycle: 0, chargeFade: 0, chargeRun: 0, chargeAnims: null,
       bufferMask: 0, bufferT: 0, airStance: false, queuedStance: -1, touchdown: null,
       wallRuns: 0, wallAngle: 0, wallDir: [1, 0, 0], throwCooldown: 0,
+      sheathed: false, sheatheT: 0, sheatheDur: 0, sheatheW: 0, sheatheWas: false, gripW: 0, gripCycle: 0,
     });
   }
 
@@ -241,6 +244,7 @@ export class World {
       if (td.t <= 0 && td.weight <= 0) p.touchdown = null;
     }
     this.move(p, dt);
+    this.updateSheathe(p, dt);
     this.advanceAnim(p);
     if (p.isSwinging() && !p.frozen) this.updateTracer(p);
     // [R 180388b9a] a frozen fighter's hit timer stands still
@@ -303,14 +307,14 @@ export class World {
     if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); this.startEvade(p, 'Shuffle'); return; }
     if (p.wants(IN.GRAB) && this.canGrab(p)) { p.use(IN.GRAB); this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
     if (p.wants(IN.ROLL) && this.canChargeDash(p)) { p.use(IN.ROLL); p.dashCooldown = this.cv.f('bb_dash_delay'); this.startEvade(p, 'AirDash'); return; }
-    if (p.wants(IN.ROLL) && this.canEvade(p)) { p.use(IN.ROLL); this.startEvade(p, 'Roll'); return; }
+    if (p.wants(IN.ROLL) && this.canEvade(p) && p.sheatheT <= 0) { p.use(IN.ROLL); this.startEvade(p, 'Roll'); return; }
     if (this.tryWallRun(p)) return;
     if (p.wants(IN.BLOCK) && this.isFeintSword(p)) {
       if (this.canFeint(p)) { p.use(IN.BLOCK); this.startFeint(p); }
       return this.dispatchAttack(p);
     }
-    // [R 180374d80] +block requires ground, nothing locking, attack not held and the post-attack cooldown elapsed
-    if (p.wants(IN.BLOCK) && p.onGround && !p.act && !(p.buttons & IN.ATTACK) && !p.blockCooldown) {
+    // [R 180374d80] +block requires ground, nothing locking, attack not held, the post-attack cooldown elapsed and the sword out
+    if (p.wants(IN.BLOCK) && p.onGround && !p.act && !(p.buttons & IN.ATTACK) && !p.blockCooldown && !p.sheathed && p.sheatheT <= 0) {
       p.use(IN.BLOCK);
       this.startAction(p, this.blockActionName(p), { dir: this.moveDir(p) });
       return;
@@ -326,7 +330,73 @@ export class World {
     if (this.tryThrow(p)) return;
     // [R 18037a1bd] the current action decides whether anything new can start
     if (p.act && !this.canCancel(p) && !this.attackCancelsEvade(p)) return;
-    if (!p.isAttacking() && p.use(IN.ATTACK)) this.startAttack(p);
+    if (!p.isAttacking() && p.use(IN.ATTACK)) { this.startAttack(p); return; }
+    this.dispatchGesture(p);
+  }
+
+  /**
+   * [R 18037a2a2] Last of all, once no lock is running and no sheathe is under way: bow, flourish, taunt, sit on the
+   * ground, then sheathe. The gestures read the held button, so holding one repeats it.
+   * @param {Player} p The fighter.
+   */
+  dispatchGesture(p) {
+    if ((p.act && !this.canCancel(p)) || p.sheatheT > 0) return;
+    const b = p.buttons;
+    if (b & IN.BOW) this.startAction(p, 'Bow', { force: true });
+    else if (b & IN.FLOURISH) this.startTaunt(p, 'Flourish');
+    else if (b & IN.TAUNT) this.startTaunt(p, 'Taunt');
+    else if (b & IN.SIT && p.onGround) this.startAction(p, 'Sit', { force: true, extra: { standing: false } });
+    else if (!p.act && this.cv.f('bb_sheathing_enable') && p.use(IN.SHEATHE)) this.startSheathe(p);
+  }
+
+  /**
+   * [R 18034d2a0, 18034d320] A taunt class action plays its stance's animation. Unless the script allows it, it draws a sheathed sword at once.
+   * @param {Player} p The fighter.
+   * @param {string} name 'Flourish' or 'Taunt'.
+   */
+  startTaunt(p, name) {
+    const def = this.data.action(name);
+    if (!flag(def.allow_sheathed)) this.setSheathed(p, false);
+    this.startAction(p, name, { force: true, anim: def['animation_' + STANCE_KEYS[this.stanceNow(p)]] });
+  }
+
+  /**
+   * [R 180372a10] Clearing it also ends any sheathe under way.
+   * @param {Player} p The fighter.
+   * @param {boolean} on Whether the sword is put away.
+   */
+  setSheathed(p, on) {
+    p.sheathed = on;
+    if (!on) p.sheatheT = 0;
+  }
+
+  /**
+   * [R 180372a90] Starts putting the sword away or drawing it. The time is always the back animation's, on any sword.
+   * @param {Player} p The fighter.
+   */
+  startSheathe(p) {
+    const { dur } = this.seqInfo(p, p.sheathed ? 'ACT_BB_UNSHEATHE_BACK' : 'ACT_BB_SHEATHE_BACK');
+    p.sheatheT = p.sheatheDur = dur;
+  }
+
+  /**
+   * [R 18036fd8a] The sheathe's clock. Running out flips the state.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
+  updateSheathe(p, dt) {
+    if (p.sheatheT <= 0) return;
+    p.sheatheT -= dt;
+    if (p.sheatheT <= 0) { p.sheatheT = 0; this.setSheathed(p, !p.sheathed); }
+  }
+
+  /**
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether the fighter's sword uses the hip animations and attachment.
+   */
+  sheatheHip(p) {
+    const id = p.swordItem ?? this.data.charSwordItem[p.character];
+    return !!this.data.swordItems.find((i) => i.id === id)?.hip;
   }
 
   /**
@@ -423,7 +493,7 @@ export class World {
    */
   tryWallRun(p) {
     const a = p.act, rolling = a?.name === 'Roll';
-    if (a?.kind === 'wallrun' || a?.kind === 'climb' || p.kneeling || !p.alive) return false;
+    if (a?.kind === 'wallrun' || a?.kind === 'climb' || p.kneeling || !p.alive || p.sheatheT > 0) return false; // [R 1803787ee]
     if (rolling) {
       const x = a.dur > 0 ? a.t / a.dur : 0;
       if (x >= 0.45 && x < 0.83) return false;
@@ -573,7 +643,7 @@ export class World {
    * @returns {boolean} Whether a throw started.
    */
   tryThrow(p) {
-    if (p.throwCooldown > 0 || p.kneeling || (p.act && p.act.lock > 0) || !p.wants(IN.THROW)) return false;
+    if (p.throwCooldown > 0 || p.kneeling || p.sheatheT > 0 || (p.act && p.act.lock > 0) || !p.wants(IN.THROW)) return false; // [R 18037a242]
     p.use(IN.THROW);
     return !!this.startAction(p, 'ThrowWeapon', { force: true, extra: { thrown: false } });
   }
@@ -727,14 +797,14 @@ export class World {
     const reacts = !evading && !swinging && !v.kneeling;
     const def = this.data.action('ThrowWeapon');
     if (blocked) {
-      if (reacts) this.startAction(v, 'AutoBlockThrowable', { force: true, anim: def.normal_block });
+      if (reacts) { this.startAction(v, 'AutoBlockThrowable', { force: true, anim: def.normal_block }); this.setSheathed(v, false); } // [R 18038257a]
       this.emit({ type: 'star_hit', what: 'blocked', star: s.id, kind: s.type, pos: s.pos, id: v.id });
       return;
     }
     v.health -= Math.trunc(this.dashDamage(v, cv.f('bb_throwable_damage_player')));
     this.emit({ type: 'star_hit', what: 'player', star: s.id, kind: s.type, pos: s.pos, id: v.id });
     if (v.health <= 0) { this.kill(v, this.player(s.owner)); return; }
-    if (reacts && cv.f('bb_throwable_interrupt_on_hit')) this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction });
+    if (reacts && cv.f('bb_throwable_interrupt_on_hit')) { this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction }); this.setSheathed(v, false); } // [R 180382619]
   }
 
   /**
@@ -786,7 +856,7 @@ export class World {
    */
   canGrab(p) {
     const a = p.act;
-    return p.onGround && (!a || a.lock <= 0 || a.kind === 'block' || (a.attack && a.phase === 'charge'));
+    return p.sheatheT <= 0 && p.onGround && (!a || a.lock <= 0 || a.kind === 'block' || (a.attack && a.phase === 'charge'));
   }
 
   /**
@@ -962,6 +1032,7 @@ export class World {
     if (this.time - p.comboIdxTime > this.cv.f('bb_string_reset_time')) p.comboIdx = 0; // [R 180374916] checked as an attack starts
     const def = p.kneeling ? this.data.action('RecoveryAttack') : this.data.attackFor(p.character, stance, dir, p.comboIdx);
     if (!def) return;
+    this.setSheathed(p, false); // [R 1803749ee, 1803496c3] an attack or feint draws at once, cutting off a sheathe
     p.hitsThisSwing = 0;
     p.lastHitTime = -100; // [R 1803744c0] every attack starts with its multi-hit timer clear
     const chargeTime = this.cv.f('bb_charge_tier3_time') * num(this.sword(p).chargetime, 1);
@@ -1089,6 +1160,14 @@ export class World {
       else if (a.lock <= 0) this.wallNext(p, 'WallSlide');
     } else if (a.kind === 'wallflip' && p.onGround && a.t > 0.1) p.act = null; // landing ends it [I]
     if (p.act !== a) return;
+    // [R 18034ce00, 18034cdf0] sitting lasts until the first input after the sit down's lock, which plays the sit up
+    if (a.kind === 'sit' && !a.standing && a.lock <= 0) {
+      if (!(p.buttons & (STAND_BUTTONS | MOVE_BUTTONS))) return;
+      const up = this.seqInfo(p, a.def.sit_up);
+      Object.assign(a, { standing: true, anim: a.def.sit_up, seq: up.seq, dur: up.dur, t: 0, cycle: 0, lock: up.dur, lockDur: up.dur });
+      this.emit({ type: 'action', id: p.id, name: a.name });
+      return;
+    }
     // block is held while the button is down [R 18034b3a0 family; hold semantics I]
     if (a.kind === 'block' && (p.buttons & IN.BLOCK) && a.lock <= 0) { a.lock = 0.0001; return; }
     if (a.lock <= 0 && p.alive) {
@@ -2017,6 +2096,7 @@ export class World {
     let base = st.idle || 'ACT_BB_B_IDLE';
     if (p.kneeling) base = 'ACT_BB_KNEELING'; // [R 18037e570]
     else if (!p.onGround) base = p.vel[2] >= 20 ? 'ACT_BB_A_RUN' : 'ACT_BB_BALANCED_JUMP'; // [R 18037c590]
+    else if (p.sheathed || p.sheatheT > 0) base = walking ? 'ACT_WALK' : moving ? 'ACT_RUN' : 'ACT_IDLE'; // [R 18037c747] the plain cycles; the sprint one is for modes other than duel [I]
     else if (walking) base = st.walk || 'ACT_WALK';
     else if (moving) base = st.run || 'ACT_BB_B_RUN';
     const maxSpeed = this.cv.f('sv_maxspeed') * (moving && !walking ? 1 : this.cv.f('bb_movement_walkspeed_multiplier'));
@@ -2063,12 +2143,39 @@ export class World {
       p.chargeFade = Math.max(0, Math.min(1, p.chargeFade + (charging ? fadeStep : -fadeStep)));
       p.chargeRun += Math.max(-4 * TICK, Math.min(4 * TICK, runTarget - p.chargeRun));
     } else p.chargeRun = runTarget;
+    // [R 18037d8cc] the sheathe layer: on at once when drawing, in and out at 4/s otherwise
+    if (p.sheathed && p.sheatheT > 0) p.sheatheW = 1;
+    else p.sheatheW += Math.max(-4 * TICK, Math.min(4 * TICK, (p.sheatheT > 0 ? 1 : 0) - p.sheatheW));
+    // [R 18037d9c7] An instant draw, as an attack out of the scabbard, plays the grip once in that layer's place, then fades at 5/s
+    if (p.sheatheT > 0) p.sheatheWas = !p.sheathed;
+    else if (p.sheatheWas !== p.sheathed) {
+      if (!p.sheathed) { p.gripW = 1; p.gripCycle = 0; }
+      p.sheatheWas = p.sheathed;
+    }
+    if (p.gripW > 0) {
+      if (p.gripCycle >= 1) p.gripW = Math.max(0, p.gripW - 5 * TICK);
+      const grip = c.seqForActivity(this.sheatheHip(p) ? 'ACT_BB_UNSHEATHE_HIP_GRIP' : 'ACT_BB_UNSHEATHE_BACK_GRIP');
+      p.gripCycle = Math.min(1, p.gripCycle + TICK / Math.max(0.01, (grip && c.seqDuration(grip)) || 0));
+    }
+  }
+
+  /**
+   * [R 1803728b0, 18037d95e; client 1803dcb80] The sheathe's layer. The client plays the hip animations for a hip sword.
+   * @param {Player} p The fighter.
+   * @returns {Array|null} Activity, cycle and weight, if it shows.
+   */
+  sheatheLayer(p) {
+    const end = this.sheatheHip(p) ? 'HIP' : 'BACK';
+    if (p.gripW > 0) return [`ACT_BB_UNSHEATHE_${end}_GRIP`, p.gripCycle, p.gripW];
+    if (p.sheatheW <= 0) return null;
+    const running = p.sheatheT > 0;
+    return [`ACT_BB_${running !== p.sheathed ? 'SHEATHE' : 'UNSHEATHE'}_${end}`, running ? 1 - p.sheatheT / p.sheatheDur : 1, p.sheatheW];
   }
 
   /**
    * What the fighter's pose is made of this tick, sent to clients and used for the blade.
    * @param {Player} p The fighter.
-   * @returns {object} base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch, wr.
+   * @returns {object} base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch, wr, sheathe.
    */
   animOf(p) {
     const a = p.act;
@@ -2106,7 +2213,7 @@ export class World {
       }
     }
     // Walk cycles have no stance arms of their own; they borrow the upper body the stance's run auto-layers.
-    const armsFrom = base === (st.walk || 'ACT_WALK') ? (st.run || null) : null;
+    const armsFrom = base === (st.walk || 'ACT_WALK') && !p.sheathed && p.sheatheT <= 0 ? (st.run || null) : null;
     const charge = p.chargeFade > 0 && p.chargeAnims ? [...p.chargeAnims, p.chargeCycle, (1 - p.chargeRun) * p.chargeFade, p.chargeRun * p.chargeFade] : null;
     let land = null;
     if (p.landT > 0) land = [p.landCycle, Math.max(0, Math.min(1, (1 - speed * 0.001) - (1 - p.landT)))];
@@ -2115,13 +2222,13 @@ export class World {
     const legs = p.airState === 1 && a ? Math.max(0, Math.min(1, (this.time - p.airT) * 8.33333)) : 0;
     const td = p.touchdown;
     const touch = td && td.weight > 0 ? [td.anim, 1 - Math.max(0, td.t) / td.total, td.weight] : null;
-    return { base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch, wr: p.wallAngle };
+    return { base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch, wr: p.wallAngle, sheathe: this.sheatheLayer(p) };
   }
 }
 
 /**
  * Turns an animOf() result into sequence layers. Shared by the client and server hitboxes.
- * Order matters: base, borrowed arms, upper body, charge, touchdown, landing, jump legs. Takes the snapshot's short names as well.
+ * Order matters: base, borrowed arms, upper body, charge, touchdown, sheathe, landing, jump legs. Takes the snapshot's short names as well.
  * @param {Character} c The character.
  * @param {object} an animOf's result, or the same from a snapshot.
  * @returns {Array<object>} Layers for Character.evalLayers.
@@ -2143,6 +2250,8 @@ export function animLayers(c, an) {
   }
   const touch = an.touch ?? an.tl;
   if (touch) { const ts = c.seqForActivity(touch[0]); if (ts) out.push({ seq: ts, cycle: touch[1], weight: touch[2], px: 0.5, py: 0.5 }); }
+  const sheathe = an.sheathe ?? an.sh;
+  if (sheathe) { const ss = c.seqForActivity(sheathe[0]); if (ss) { const [ux, uy] = c.blendFor(ss, an.mx, an.my); out.push({ seq: ss, cycle: sheathe[1], weight: sheathe[2], px: ux, py: uy }); } }
   const land = an.land ?? an.ld;
   if (land && land[1] > 0) out.push({ seq: c.seqForActivity('ACT_BB_JUMP_LAND'), cycle: land[0], weight: land[1], px: 0.5, py: 0.5 });
   const legs = an.legs ?? an.lg;
