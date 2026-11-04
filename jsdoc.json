@@ -5,6 +5,7 @@
     "opts": {
     "destination": "./docs",
     "recurse": true,
-    "template": "templates/default"
+    "template": "templates/default",
+    "readme": "README.md"
     }
 }
