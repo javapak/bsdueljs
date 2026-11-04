@@ -161,8 +161,9 @@ export class World {
    * @param {CharacterStore} o.assets Character models, already preloaded.
    * @param {string} [o.map] Map name.
    * @param {number} [o.seed] Starts the random numbers, so a match can be replayed. Part of the game's state.
+   * @param {function(World): Match[]} [o.arenas] What's played here: queued arenas, or Match.single for one match alone.
    */
-  constructor({ bsp, data, cvars, assets, map = '', seed = (Math.random() * 4294967296) >>> 0 }) {
+  constructor({ bsp, data, cvars, assets, map = '', seed = (Math.random() * 4294967296) >>> 0, arenas = Duel.forMap }) {
     Object.assign(this, { bsp, data, cv: cvars, assets, map });
     this.time = 0;
     this.rngState = seed >>> 0;
@@ -170,7 +171,7 @@ export class World {
     this.tickCount = 0;
     this.players = [];
     this.events = [];
-    this.duels = Duel.forMap(this);
+    this.duels = arenas(this);
   }
 
   /**
@@ -2404,28 +2405,24 @@ export function segSegDist(p1, q1, p2, q2) {
   return len(sub(add(p1, scale(d1, s)), add(p2, scale(d2, t))));
 }
 
-// ---------------------------------------------------------------------- duel (CBerimbauDuel)
+// ---------------------------------------------------------------------- match (CBerimbauDuel's rounds)
 /**
- * [R 18032c4c0, 18032d420, 18032df30] best of vs_duel_rounds; frozen warmup, fight, intermission, cooldown.
- * One per berimbau_duel: its own queue, match and spawns, side by side on the map.
- * [R server.dll 18031ea20, 18031e37b, 18032df30, 180329070] The queue is everyone in the arena in order, fighters included.
- * A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to
- * the back, and after the cooldown the front two play.
+ * Arenas with both teams' spawns, in name order, compared by code unit so that every machine gets the same order.
+ * @param {BSP} b The map.
+ * @returns {object[]} Its berimbau_duel entities.
  */
-export class Duel {
-  /**
-   * Arenas with both team's spawns, in name order. A map without any gets one over all its spawns.
-   * @param {World} w The world.
-   * @returns {Duel[]} The map's arenas.
-   */
-  static forMap(w) {
-    const b = w.bsp;
-    const spawns = b.entities.filter((e) => e.classname === 'berimbau_spawn' && e.origin);
-    const ok = (e) => spawns.some((s) => s.duel === e.targetname && s.duelteam === '1') && spawns.some((s) => s.duel === e.targetname && s.duelteam === '2');
-    const ents = b.entities.filter((e) => e.classname === 'berimbau_duel').filter(ok).sort((x, y) => String(x.targetname).localeCompare(String(y.targetname)));
-    return (ents.length ? ents : [null]).map((e, i) => new Duel(w, i, e));
-  }
+function arenaEntities(b) {
+  const spawns = b.entities.filter((e) => e.classname === 'berimbau_spawn' && e.origin);
+  const ok = (e) => spawns.some((s) => s.duel === e.targetname && s.duelteam === '1') && spawns.some((s) => s.duel === e.targetname && s.duelteam === '2');
+  const name = (e) => String(e.targetname);
+  return b.entities.filter((e) => e.classname === 'berimbau_duel').filter(ok).sort((x, y) => (name(x) < name(y) ? -1 : name(x) > name(y) ? 1 : 0));
+}
 
+/**
+ * [R 18032c4c0, 18032d420, 18032df30] Two fighters, best of vs_duel_rounds; frozen warmup, fight, intermission, cooldown.
+ * Nothing here knows about a queue, so it can run on its own and roll back: everything in the fields below `name` is game state.
+ */
+export class Match {
   /**
    * @param {World} world The world.
    * @param {number} [index] Arena index.
@@ -2436,75 +2433,32 @@ export class Duel {
     this.index = index;
     this.ent = ent;
     this.name = world.data?.arenaNames?.[String(ent?.arena ?? '').replace('#', '').toLowerCase()] ?? ent?.webarena ?? ent?.arena ?? 'Unnamed Arena';
-    this.queue = [];
     this.state = 'waiting';
     this.timer = 0; this.round = 0; this.wins = {}; this.results = []; this.fighters = []; this.winner = null; this.last = null;
     this.arena = null;
   }
 
   /**
+   * The map's first arena, as its own match: what a peer to peer duel plays in. For World's `arenas` option.
+   * @param {World} w The world.
+   * @returns {Match[]} The one match.
+   */
+  static single(w) { return [new Match(w, 0, arenaEntities(w.bsp)[0] ?? null)]; }
+
+  /**
+   * Puts two fighters in the world, here, and starts.
+   * @param {Player[]} P The two fighters, in the order both peers agree on.
+   */
+  seat(P) {
+    for (const p of P) p.arena = this.index;
+    this.w.players = [...P];
+    this.beginMatch(P);
+  }
+
+  /**
    * @param {object} e Event; the arena's index is added.
    */
   emit(e) { this.w.emit({ ...e, arena: this.index }); }
-
-  /**
-   * [R 18031e190] bb_queue_bot_discrimination: a person waiting doesn't wait behind a bot
-   * Also ends a bot match on the spot when a person arrives.
-   * @param {Player} p The fighter.
-   */
-  enqueue(p) {
-    if (this.queue.includes(p)) return;
-    p.arena = this.index;
-    p.unready = false;
-    this.queue.push(p);
-    if (!p.isBot && this.fighters.some((id) => this.w.player(id)?.isBot)) this.abort();
-    else this.refill();
-  }
-
-  /**
-   * Takes someone out of the arena. A fighter leaving ends the match.
-   * @param {number} id Player id.
-   */
-  drop(id) {
-    const p = this.queue.find((q) => q.id === id);
-    if (!p) return;
-    this.queue = this.queue.filter((q) => q !== p);
-    const playing = this.fighters.includes(id);
-    this.w.players = this.w.players.filter((q) => q !== p);
-    if (playing) this.abort(); else this.refill();
-  }
-
-  /**
-   * Ends the match with no result and lets the queue refill.
-   */
-  abort() {
-    this.state = 'waiting'; this.fighters = [];
-    this.emit({ type: 'duel_aborted' });
-    this.refill();
-  }
-
-  /**
-   * Waiting: the front two play. One alone has the arena to themselves; nobody else in the arena stays in the world.
-   */
-  refill() {
-    if (this.state !== 'waiting') return;
-    this.queue.sort((a, b) => (a.isBot ? 1 : 0) - (b.isBot ? 1 : 0));
-    const front = this.queue.slice(0, 2);
-    this.w.players = this.w.players.filter((q) => q.arena !== this.index || front.includes(q));
-    for (const p of front) if (!this.w.players.includes(p)) this.w.players.push(p);
-    if (front.length === 2) this.beginMatch(front);
-    else if (front.length === 1) this.placeSolo(front[0]);
-  }
-
-  /**
-   * The one person here walks around from the first spawn, a unit up so they don't start inside the floor.
-   * @param {Player} p The fighter.
-   */
-  placeSolo(p) {
-    const s = this.pickSpawnPair();
-    p.reset([s[0].o[0], s[0].o[1], s[0].o[2] + 1], s[0].yaw);
-    p.frozen = false;
-  }
 
   /**
    * Spawns carry explicit arena and team keys: duel=<berimbau_duel targetname>, duelteam=1|2, spawnid.
@@ -2582,12 +2536,7 @@ export class Duel {
         if (this.timer <= 0) this.afterIntermission();
         break;
       case 'cooldown':
-        if (this.timer <= 0) {
-          // [R 1803592d0] the fighters are out, and whoever asked to stop watching leaves the queue
-          this.queue = this.queue.filter((p) => !(p.unready && this.fighters.includes(p.id)));
-          this.state = 'waiting'; this.fighters = [];
-          this.refill();
-        }
+        if (this.timer <= 0) this.cooldownOver();
         break;
       default:
     }
@@ -2625,16 +2574,126 @@ export class Duel {
     const champ = this.fighters.find((id) => (this.wins[id] || 0) >= need);
     if (champ !== undefined || this.round >= cv.f('vs_duel_rounds') + 4) {
       this.winner = champ ?? null;
-      const p = champ !== undefined ? this.w.player(champ) : null;
-      if (p) p.score++;
-      // [R 18031ea20] winner to the front, the rest to the back
-      const others = this.queue.filter((q) => this.fighters.includes(q.id) && q !== p);
-      if (p) for (const q of others) q.losses = (q.losses ?? 0) + 1;
-      this.queue = [...(p ? [p] : []), ...this.queue.filter((q) => q !== p && !others.includes(q)), ...others];
+      this.matchOver(champ !== undefined ? this.w.player(champ) : null);
       this.state = 'cooldown';
       this.timer = cv.f('vs_duel_cooldown_time');
       this.emit({ type: 'duel_over', winner: champ ?? null, wins: this.wins });
     } else this.startRound(false);
+  }
+
+  /**
+   * What the result means past this match. On its own, nothing.
+   * @param {Player|null} champ The winner, if any.
+   */
+  matchOver(champ) { void champ; }
+
+  /** On its own, the same two go again. */
+  cooldownOver() { this.beginMatch(this.fighters.map((id) => this.w.player(id))); }
+}
+
+// ---------------------------------------------------------------------- arena queue (CBerimbauDuel)
+/**
+ * One per berimbau_duel: its own queue around a match, side by side on the map.
+ * [R server.dll 18031ea20, 18031e37b, 18032df30, 180329070] The queue is everyone in the arena in order, fighters included.
+ * A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to
+ * the back, and after the cooldown the front two play.
+ */
+export class Duel extends Match {
+  /**
+   * Arenas with both team's spawns, in name order. A map without any gets one over all its spawns.
+   * @param {World} w The world.
+   * @returns {Duel[]} The map's arenas.
+   */
+  static forMap(w) {
+    const ents = arenaEntities(w.bsp);
+    return (ents.length ? ents : [null]).map((e, i) => new Duel(w, i, e));
+  }
+
+  /**
+   * @param {World} world The world.
+   * @param {number} [index] Arena index.
+   * @param {object} [ent] Its berimbau_duel entity; null for a map without one.
+   */
+  constructor(world, index = 0, ent = null) {
+    super(world, index, ent);
+    this.queue = [];
+  }
+
+  /**
+   * [R 18031e190] bb_queue_bot_discrimination: a person waiting doesn't wait behind a bot
+   * Also ends a bot match on the spot when a person arrives.
+   * @param {Player} p The fighter.
+   */
+  enqueue(p) {
+    if (this.queue.includes(p)) return;
+    p.arena = this.index;
+    p.unready = false;
+    this.queue.push(p);
+    if (!p.isBot && this.fighters.some((id) => this.w.player(id)?.isBot)) this.abort();
+    else this.refill();
+  }
+
+  /**
+   * Takes someone out of the arena. A fighter leaving ends the match.
+   * @param {number} id Player id.
+   */
+  drop(id) {
+    const p = this.queue.find((q) => q.id === id);
+    if (!p) return;
+    this.queue = this.queue.filter((q) => q !== p);
+    const playing = this.fighters.includes(id);
+    this.w.players = this.w.players.filter((q) => q !== p);
+    if (playing) this.abort(); else this.refill();
+  }
+
+  /**
+   * Ends the match with no result and lets the queue refill.
+   */
+  abort() {
+    this.state = 'waiting'; this.fighters = [];
+    this.emit({ type: 'duel_aborted' });
+    this.refill();
+  }
+
+  /**
+   * Waiting: the front two play. One alone has the arena to themselves; nobody else in the arena stays in the world.
+   */
+  refill() {
+    if (this.state !== 'waiting') return;
+    this.queue.sort((a, b) => (a.isBot ? 1 : 0) - (b.isBot ? 1 : 0));
+    const front = this.queue.slice(0, 2);
+    this.w.players = this.w.players.filter((q) => q.arena !== this.index || front.includes(q));
+    for (const p of front) if (!this.w.players.includes(p)) this.w.players.push(p);
+    if (front.length === 2) this.beginMatch(front);
+    else if (front.length === 1) this.placeSolo(front[0]);
+  }
+
+  /**
+   * The one person here walks around from the first spawn, a unit up so they don't start inside the floor.
+   * @param {Player} p The fighter.
+   */
+  placeSolo(p) {
+    const s = this.pickSpawnPair();
+    p.reset([s[0].o[0], s[0].o[1], s[0].o[2] + 1], s[0].yaw);
+    p.frozen = false;
+  }
+
+  /**
+   * [R 18031ea20] winner to the front, the rest to the back
+   * @param {Player|null} p The winner, if any.
+   */
+  matchOver(p) {
+    if (p) p.score++;
+    const others = this.queue.filter((q) => this.fighters.includes(q.id) && q !== p);
+    if (p) for (const q of others) q.losses = (q.losses ?? 0) + 1;
+    this.queue = [...(p ? [p] : []), ...this.queue.filter((q) => q !== p && !others.includes(q)), ...others];
+  }
+
+  /** [R 1803592d0] the fighters are out, and whoever asked to stop watching leaves the queue */
+  cooldownOver() {
+    this.queue = this.queue.filter((p) => !(p.unready && this.fighters.includes(p.id)));
+    this.state = 'waiting'; this.fighters = [];
+    this.refill();
   }
 }
 void STANCE_KEYS;
