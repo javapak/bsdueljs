@@ -6,11 +6,12 @@ import { entityMatrix, matMul, angleVectors, DEG, angleDiff, angleNorm } from '/
 import { Renderer } from './render.js';
 import { FX } from './fx.js';
 import { createHud } from './hud.js';
+import { createCustomize } from './customize.js';
 import { Audio } from './audio.js';
 import { parsePhy, Ragdoll } from '/shared/ragdoll.js';
 
 const $ = (id) => document.getElementById(id);
-const status = (s, err) => { $('status').textContent = s; $('status').className = err ? 'err' : ''; };
+const status = (s, err) => { const e = $('status'); if (!e) return; e.textContent = s; e.className = err ? 'err' : ''; e.style.visibility = s === 'Ready.' ? 'hidden' : ''; };
 const params = new URLSearchParams(location.search);
 window.duelDebug = { errors: [], noTex: params.has("notex"), allowUnlocked: params.has("nolock") };
 const gpuAdapter = navigator.gpu ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
@@ -22,13 +23,7 @@ device.addEventListener('uncapturederror', (e) => { console.error('GPU', e.error
 device.lost.then((i) => status('GPU device lost: ' + i.message, true));
 
 const info = await (await fetch('/api/info')).json();
-for (const [k, v] of Object.entries(info.characters)) { const o = document.createElement('option'); o.value = k; o.textContent = v.name; $('char').append(o); }
-$('char').value = params.get('char') && info.characters[params.get('char')] ? params.get('char') : (info.characters.knight ? 'knight' : Object.keys(info.characters)[0]);
-for (const [k, label] of Object.entries(info.swords)) { const o = document.createElement('option'); o.value = k; o.textContent = label; $('sword').append(o); }
-const syncSword = () => { $('sword').value = info.charSword[$('char').value] || 'longsword'; };
-$('char').addEventListener('change', syncSword);
-syncSword();
-if (info.swords[params.get('sword')]) $('sword').value = params.get('sword');
+const customize = createCustomize(document.body, info, params);
 
 // ------------------------------------------------------------ assets
 const fileCache = new Map();
@@ -49,16 +44,21 @@ const canvas = $('c');
 const fmt = navigator.gpu.getPreferredCanvasFormat();
 const R = new Renderer(canvas, device, fmt, fetchGame);
 window.duelDebug.R = R;
+R.noCSM = params.has('nocsm');
+window.duelDebug.R = R;
+R.noCSM = params.has('nocsm');
 R.hideProps = params.has('noprops'); R.hideWorld = params.has('noworld');
 window.addEventListener('resize', () => R.resize());
 status(`Loading map ${info.map}…`);
 const bspBytes = await fetchGame(`maps/${info.map}.bsp`);
 if (!bspBytes) { status('Could not load the map from the server.', true); throw new Error('no map'); }
 const bsp = new BSP(bspBytes);
+await bsp.addPropCollision((p) => fetchGame(p));
 bspRef = bsp;
 await R.loadWorld(bsp, (s) => status(`Loading ${info.map}: ${s}`));
 const fx = new FX(R, fetchGame, bsp);
 window.duelDebug.fx = fx;
+fx.throwables = info.throwables;
 await fx.load();
 const audio = new Audio(fetchGame, info, bsp);
 window.duelDebug.audio = audio;
@@ -83,17 +83,17 @@ async function loadChar(key) {
   charCache.set(key, pr);
   return pr;
 }
-$('go').disabled = false; $('go').textContent = 'Enter duel'; status('Ready.');
+customize.ready(); status('Ready.');
 
 // ------------------------------------------------------------ net
-let ws, myId = null;
+let ws, myId = null, started = false;
 const snaps = [];
 const clockOffset = { v: 0, set: false };
 let camYaw = 0, camPitch = 8;
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name: $('name').value, character: $('char').value, sword: $('sword').value }));
-  ws.onclose = () => { status('Disconnected from server.', true); $('menu').style.display = ''; };
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name: customize.name, character: customize.char, item: customize.sword, look: customize.look }));
+  ws.onclose = () => { myId = null; started = false; customize.show(false); status('Disconnected from server.', true); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.t === 'welcome') myId = m.id;
@@ -117,13 +117,18 @@ let didInitCam = false, frozen = false;
 // ------------------------------------------------------------ input
 const keys = new Set();
 let mouse = 0;
-const KEYMAP = { KeyW: IN.FORWARD, KeyS: IN.BACK, KeyA: IN.LEFT, KeyD: IN.RIGHT, Space: IN.JUMP, ControlLeft: IN.ROLL, ControlRight: IN.ROLL, ShiftLeft: IN.SHUFFLE, ShiftRight: IN.SHUFFLE, KeyQ: IN.GRAB, AltLeft: IN.WALK, Digit1: IN.STANCE_FAST, Digit2: IN.STANCE_BAL, Digit3: IN.STANCE_HEAVY };
-addEventListener('keydown', (e) => { if (KEYMAP[e.code] !== undefined) { keys.add(e.code); e.preventDefault(); } });
+const KEYMAP = { KeyE: IN.THROW, KeyW: IN.FORWARD, KeyS: IN.BACK, KeyA: IN.LEFT, KeyD: IN.RIGHT, Space: IN.JUMP, ControlLeft: IN.ROLL, ControlRight: IN.ROLL, ShiftLeft: IN.SHUFFLE, ShiftRight: IN.SHUFFLE, KeyQ: IN.GRAB, AltLeft: IN.WALK, Digit1: IN.STANCE_FAST, Digit2: IN.STANCE_BAL, Digit3: IN.STANCE_HEAVY };
+addEventListener('keydown', (e) => {
+  // bb_show_customization: M opens it in a match, and it takes over the screen and the keys until it closes
+  if (customize.open) { if (e.code === 'Escape' && started) closeCustomize(); return; }
+  if (e.code === 'KeyM' && started) { openCustomize(); return; }
+  if (KEYMAP[e.code] !== undefined) { keys.add(e.code); e.preventDefault(); }
+});
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => { keys.clear(); mouse = 0; });
 const sens = 0.22;
 document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) { if (!frozen) camYaw = angleNorm(camYaw - e.movementX * sens); camPitch = Math.max(-60, Math.min(70, camPitch + e.movementY * sens)); } });
-canvas.addEventListener('mousedown', (e) => { if (document.pointerLockElement !== canvas) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* retried on next click */ } if (!window.duelDebug.allowUnlocked) return; } mouse |= e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0; });
+canvas.addEventListener('mousedown', (e) => { if (customize.open) return; if (document.pointerLockElement !== canvas) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* retried on next click */ } if (!window.duelDebug.allowUnlocked) return; } mouse |= e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0; });
 addEventListener('mouseup', (e) => { mouse &= ~(e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0); });
 addEventListener('contextmenu', (e) => e.preventDefault());
 let seq = 0;
@@ -131,6 +136,7 @@ setInterval(() => {
   if (ws?.readyState !== 1 || myId == null) return;
   let b = mouse;
   for (const k of keys) b |= KEYMAP[k];
+  if (customize.open) b = 0;
   if (window.duelDebug.forceButtons !== undefined) b = window.duelDebug.forceButtons;
   if (window.duelDebug.forceYaw !== undefined) camYaw = window.duelDebug.forceYaw;
   ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y: +camYaw.toFixed(2), p: +camPitch.toFixed(2) }));
@@ -205,6 +211,86 @@ function poseOf(ci, an, inst, now) {
   if (up) { up.weight = inst.upW; inst.upLast = up; } else if (inst.upW > 0 && inst.upLast) layers.push({ ...inst.upLast, weight: inst.upW });
   return char.evalLayers([...stack, ...layers]);
 }
+// The fighter's sword and scabbard meshes, once they've loaded. Each fighter gets their own bones.
+const swordMeshes = new Map();
+window.duelDebug.swordMeshes = swordMeshes;
+window.duelDebug.instances = () => instances;
+function swordParts(p) {
+  const inst = instances.get(p.id);
+  if (!inst) return null;
+  if (inst.swordItem !== p.it) { inst.swordItem = p.it; inst.swordParts = null; loadSwordParts(p.it).then((list) => { if (inst.swordItem === p.it) inst.swordParts = list.map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true })); }); }
+  return inst.swordParts;
+}
+function loadSwordParts(id) {
+  if (!swordMeshes.has(id)) {
+    const item = info.swordItems.find((i) => i.id === id);
+    const paths = item ? [item.model, item.scabbard].filter(Boolean) : [];
+    swordMeshes.set(id, Promise.all(paths.map((path) => R.loadAttachment(path, item.skin))).then((list) => list.filter(Boolean)));
+  }
+  return swordMeshes.get(id);
+}
+// What the fighter wears: the body with its skin and body groups, then a part for each item with a model
+function lookParts(p, ci) {
+  const inst = instances.get(p.id);
+  const ids = p.lk ?? [], key = ids.join();
+  if (inst.lookKey !== key) {
+    inst.lookKey = key; inst.look = []; inst.body = null;
+    const items = ids.map((id) => info.lookItems.find((i) => i.id === id)).filter(Boolean);
+    const body = new Set(items.map((i) => i.body).filter(Boolean)), skin = items.find((i) => i.kind === 'skin')?.skin ?? 0;
+    R.loadBody(info.characters[p.c].model, skin, body).then((mesh) => { if (inst.lookKey === key) inst.body = mesh; });
+    Promise.all(items.filter((i) => i.model).map((i) => R.loadAttachment(i.model, i.skin, i.material))).then((list) => {
+      if (inst.lookKey === key) inst.look = list.filter(Boolean).map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true }));
+    });
+  }
+  return inst.look;
+}
+// Thrown weapons: the type's model at its own size (the scripts' "scale" key is never read by the game), playing the
+// model's ACT_FLY tumble at the snapshot's position. [I] +X points along the flight; the game's code for that wasn't
+// traced. One in hand shows at the fighter's hand until it leaves.
+const starMeshes = new Map(), starParts = new Map();
+const starMesh = (kind) => {
+  if (!starMeshes.has(kind)) { starMeshes.set(kind, null); R.loadAttachment(info.throwables[kind].model, 0).then((m) => { if (m) { m.flight = new Character(m.model, []); starMeshes.set(kind, m); } }); }
+  return starMeshes.get(kind);
+};
+function starPart(key, kind) {
+  const mesh = starMesh(kind);
+  if (!mesh) return null;
+  let part = starParts.get(key);
+  if (!part) { part = { mesh, bones: R.newBoneBuffer(), shown: true }; starParts.set(key, part); }
+  return part;
+}
+// The mesh held rigidly by this matrix
+const holdStar = (part, m, pos) => {
+  for (let i = 0; i < part.mesh.model.bones.length && i < 128; i++) part.bones.data.set(m, i * 12);
+  R.lightCharacter({ bones: part.bones }, pos);
+};
+function flyStar(part, pos, vel, time) {
+  const c = part.mesh.flight, seq = c.seqForActivity('ACT_FLY');
+  const yaw = Math.atan2(vel[1], vel[0]) / DEG, pitch = -Math.atan2(vel[2], Math.hypot(vel[0], vel[1])) / DEG;
+  const dur = seq ? c.seqDuration(seq) : 0;
+  const bones = c.boneMatrices(c.evalLayers(seq ? [{ seq, cycle: dur > 0 ? (time / dur) % 1 : 0, weight: 1 }] : []), entityMatrix(pos, [pitch, yaw, 0]));
+  bones.forEach((b, i) => { if (i < 128) part.bones.data.set(matMul(b, c.bones[i].poseToBone), i * 12); });
+  R.lightCharacter({ bones: part.bones }, pos);
+}
+const flyingStars = new Set();
+function starsFrame(cur, time, attached) {
+  const live = new Set();
+  for (const s of cur.snap?.pj ?? []) {
+    live.add(s.id);
+    const part = starPart(s.id, s.k);
+    const t = Math.max(0, Math.min(0.1, time - cur.snap.time)), pos = [s.o[0] + s.v[0] * t, s.o[1] + s.v[1] * t, s.o[2] + s.v[2] * t];
+    fx.starTrail(s.id, pos, s.v, info.throwables[s.k]);
+    audio.pos.set(`star${s.id}`, pos);
+    flyingStars.add(s.id);
+    if (!part) continue;
+    flyStar(part, pos, s.v, time);
+    attached.push(part);
+  }
+  fx.endStarTrails(live);
+  // however it ended: a hit, running out of life, or the round restarting
+  for (const id of flyingStars) if (!live.has(id)) { audio.endStar(id); flyingStars.delete(id); }
+  for (const id of starParts.keys()) if (typeof id === 'number' && !live.has(id)) starParts.delete(id);
+}
 function frameCharacter(p, ci, world) {
   let inst = instances.get(p.id);
   if (!inst) { inst = { bones: R.newBoneBuffer() }; instances.set(p.id, inst); }
@@ -222,7 +308,7 @@ function frameCharacter(p, ci, world) {
   const src = ci.char.bones;
   for (let i = 0; i < bones.length && i < 128; i++) data.set(matMul(bones[i], src[i].poseToBone), i * 12);
   data.set(p.id === myId ? [0.9, 0.7, 0.3, 0] : [0.4, 0.6, 1.0, 0], 128 * 12);
-  return { bones: inst.bones, mesh: ci.mesh, world: bones };
+  return { bones: inst.bones, mesh: inst.body ?? ci.mesh, world: bones };
 }
 // Values the charge proxies hand bb_charge, from the character's material
 function setCharge(fc, amount, color) {
@@ -240,6 +326,11 @@ function setCharge(fc, amount, color) {
   fc.charge = amount;
 }
 // The first entry of the character's colorlist; the game networks the player's choice as m_vecCharacterColor [I: which entry]
+// An outfit color from the customization screen stands in for the character's own [I]
+function lookColor(ids) {
+  const c = ids?.map((id) => info.lookItems.find((i) => i.id === id)).find((i) => i?.colour)?.colour;
+  return c ? c.trim().split(/\s+/).map((x) => Number(x) / 255) : null;
+}
 function charColor(key) {
   const v = String(info.characters[key]?.color?.color ?? '1 1 1').trim().split(/\s+/).map(Number);
   return [v[0] ?? 1, v[1] ?? 1, v[2] ?? 1];
@@ -270,6 +361,80 @@ function bladeTris(out, world, gripBone, color) {
   quad(c0, b0, c1, b1);
 }
 
+// ------------------------------------------------------------ customization preview
+// [customization.res] the render panel's camera, and the sword wheel [R client.dll 18037b759]: eleven slots turned
+// sword_rotation_delta degrees apart about the right axis of sword_angles, on a sword_radius circle around sword_center.
+// The middle slot is the chosen sword, by the fighter's hand. [I] the fighter's facing is matched to the reference.
+const MENU_EYE = [-76, 35, 26], MENU_LOOK = [10, 0, 36], MENU_FOV = 70, MENU_YAW = 125;
+const WHEEL = { center: [50, -70, 48], angles: [10, 115, 25], radius: 100, delta: 10, slots: 11, middle: 5 };
+function wheelSlot(i) {
+  const a = entityMatrix([0, 0, 0], WHEEL.angles);
+  const axis = [a[1], a[5], a[9]].map((x) => -x); // the right vector: matrices hold left in the second column
+  const t = (i - WHEEL.middle) * WHEEL.delta * DEG, c = Math.cos(t), sn = Math.sin(t), k = 1 - c, [x, y, z] = axis;
+  const turn = [c + x * x * k, x * y * k - z * sn, x * z * k + y * sn, 0, y * x * k + z * sn, c + y * y * k, y * z * k - x * sn, 0, z * x * k - y * sn, z * y * k + x * sn, c + z * z * k, 0];
+  const m = matMul(turn, a);
+  const f = [m[0], m[4], m[8]], p = WHEEL.center.map((v, n) => v + f[n] * WHEEL.radius);
+  const roll = matMul(m, [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0]); // the slot's roll, less 90
+  roll[3] = p[0]; roll[7] = p[1]; roll[11] = p[2];
+  return roll;
+}
+const wheelParts = new Map();
+function wheelPart(slot, id) {
+  let e = wheelParts.get(slot);
+  if (!e) { e = { part: null, id: null, bones: R.newBoneBuffer() }; wheelParts.set(slot, e); }
+  if (e.id !== id) {
+    e.id = id; e.part = null;
+    loadSwordParts(id).then((list) => { if (e.id === id && list[0]) e.part = { mesh: list[0], bones: e.bones, shown: true }; });
+  }
+  return e.part;
+}
+customize.hooks.onCharacter = () => { menuAnim.t0 = -1; };
+const menuAnim = { t0: -1, char: null };
+function previewFrame(time) {
+  R.loadMenuEnv();
+  const parts = [], key = customize.char, p = { id: 'menu', c: key, lk: customize.look, it: customize.sword };
+  loadChar(key);
+  const entry = charCache.get(key);
+  if (!entry._resolved) entry.then((v) => { entry._resolved = v; });
+  const ci = entry._resolved;
+  if (ci) {
+    let inst = instances.get('menu');
+    if (!inst) { inst = { bones: R.newBoneBuffer() }; instances.set('menu', inst); }
+    if (menuAnim.char !== key) { menuAnim.char = key; menuAnim.t0 = -1; inst.lookKey = null; }
+    if (menuAnim.t0 < 0) menuAnim.t0 = time;
+    // characters.txt names these. A name that's missing, or the model's bare reference pose, falls to the balanced idle [I]
+    const c = ci.char, label = (n) => { const s = c.byLabel.get(String(n).toLowerCase()); return s && s.model !== c.root ? s : null; };
+    const sel = label(info.characters[key].menuSelect), idle = label(info.characters[key].menuIdle) ?? c.seqForActivity('ACT_BB_B_IDLE') ?? c.seqs[0];
+    const dt = time - menuAnim.t0, selDur = sel ? c.seqDuration(sel) : 0;
+    const seq = sel && dt < selDur ? sel : idle, dur = c.seqDuration(seq), cycle = seq === sel ? dt / selDur : ((dt - selDur) / (dur || 1)) % 1;
+    const world = entityMatrix([0, 0, 0], [0, MENU_YAW, 0]);
+    const bones = c.boneMatrices(c.evalLayers([{ seq, cycle: Math.max(0, cycle), weight: 1 }]), world, { pitch: 0, yaw: MENU_YAW });
+    bones.forEach((b, i) => { if (i < 128) inst.bones.data.set(matMul(b, c.bones[i].poseToBone), i * 12); });
+    R.menuLights(inst.bones);
+    const fc = { bones: inst.bones, mesh: null, world: bones };
+    const look = lookParts(p, ci);
+    fc.mesh = inst.body ?? ci.mesh;
+    parts.push(fc);
+    for (const part of look) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
+    // the sword itself is on the wheel; the fighter only shows its scabbard
+    const held = swordParts(p);
+    if (held) for (const part of held.slice(1)) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
+    const list = customize.list, at = Math.max(0, list.indexOf(customize.sword));
+    for (let i = 0; i < WHEEL.slots; i++) {
+      const part = wheelPart(i, list[(at + (i - WHEEL.middle) + list.length * 12) % list.length]);
+      if (!part) continue;
+      // the slot places the sword's grip bone, as a fighter's hand does
+      const m = matMul(wheelSlot(i), part.mesh.model.bones[0].poseToBone);
+      for (let b = 0; b < part.mesh.model.bones.length && b < 128; b++) part.bones.data.set(m, b * 12);
+      R.menuLights(part.bones);
+      parts.push(part);
+    }
+  }
+  const aspect = canvas.width / canvas.height, fovY = 2 * Math.atan(Math.tan(MENU_FOV * DEG / 2) / aspect);
+  const vp = mul4(perspective(fovY, aspect, 4, 4000), lookAt(MENU_EYE, MENU_LOOK, [0, 0, 1]));
+  R.frame({ vp, eye: MENU_EYE, fwd: norm3(MENU_LOOK.map((v, i) => v - MENU_EYE[i])), fovY, characters: parts, tris: [], preview: true });
+}
+
 // ------------------------------------------------------------ frame loop
 const norm3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
 let lastFrame = performance.now();
@@ -280,8 +445,9 @@ async function tick() {
   frames++;
   const now = performance.now();
   if (now - fpsT > 1000) { fps = frames; frames = 0; fpsT = now; window.duelDebug.fps = fps; }
+  if (customize.open) { previewFrame(now / 1000); return; }
   let eye = [0, 0, 100], tgt = [100, 0, 100];
-  const characters = [], tris = [];
+  const characters = [], tris = [], attached = [];
   let me = null, cur = null;
   if (snaps.length) {
     const renderTime = now / 1000 + clockOffset.v - 0.05;
@@ -295,12 +461,20 @@ async function tick() {
       const world = entityMatrix(p.o, [0, p.y, 0]);
       const fc = frameCharacter(p, ci, world);
       R.lightCharacter(fc, p.o);
-      const color = charColor(p.c);
+      const color = lookColor(p.lk) ?? charColor(p.c);
       const st = fx.updatePlayer(p, ci.char, fc.world, ci.gripBone, color);
       setCharge(fc, st.charge, color);
       characters.push(fc);
-      bladeTris(tris, fc.world, ci.gripBone, p.a?.ph === 'swing' ? [1, 0.95, 0.7, 1] : [0.85, 0.87, 0.92, 1]);
+      for (const part of lookParts(p, ci)) { R.attachTo(fc, part, ci.char); if (part.shown) attached.push(part); }
+      if (p.a?.th) {
+        const kind = info.charThrowable[p.c], part = kind && starPart(`hand${p.id}`, kind), att = ci.char.root.attachments.find((x) => x.name === 'anim_attachment_LH');
+        if (part && att) { holdStar(part, matMul(fc.world[att.bone], att.local), p.o); attached.push(part); }
+      }
+      const held = swordParts(p);
+      if (held) for (const part of held) { R.attachTo(fc, part, ci.char); if (part.shown) attached.push(part); }
+      else bladeTris(tris, fc.world, ci.gripBone, p.a?.ph === 'swing' ? [1, 0.95, 0.7, 1] : [0.85, 0.87, 0.92, 1]);
     }
+    starsFrame(cur, renderTime, attached);
   }
   if (me) {
     const { forward: f } = angleVectors([camPitch, camYaw, 0]);
@@ -325,7 +499,7 @@ async function tick() {
   const F = norm3([tgt[0] - eye[0], tgt[1] - eye[1], tgt[2] - eye[2]]), RT = norm3([F[1], -F[0], 0]), UP = [RT[1] * F[2] - RT[2] * F[1], RT[2] * F[0] - RT[0] * F[2], RT[0] * F[1] - RT[1] * F[0]];
   audio.frame(eye, RT);
   const built = fx.build(eye, RT, UP, Math.tan(37.5 * DEG));
-  R.frame({ vp, eye, characters, tris, fx: { verts: fx.verts, count: built.count, draws: built.draws } });
+  R.frame({ vp, eye, fwd: F, fovY: 75 * DEG, characters: characters.concat(attached), tris, fx: { verts: fx.verts, count: built.count, draws: built.draws } });
   if (cur) hud(cur, me);
   window.duelDebug.state = { snaps: snaps.length, myId, chars: characters.length, duel: cur?.snap?.duel, stats: R.stats, eye, me: me && { o: me.o, a: me.a, hp: me.hp, an: me.an } };
 }
@@ -340,13 +514,32 @@ function hud(cur, me) {
 }
 requestAnimationFrame(tick);
 
-$('go').onclick = () => {
-  audio.start();
-  $('menu').style.display = 'none';
+function openCustomize() {
+  keys.clear(); mouse = 0;
+  document.exitPointerLock?.();
+  $('hud').style.display = 'none';
+  customize.show(true);
+}
+function closeCustomize() {
+  customize.hide();
   $('hud').style.display = 'block';
-  loadChar($('char').value);
+  try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* needs a user gesture; the next click locks */ }
+}
+customize.onCancel(closeCustomize);
+customize.onConfirm(() => {
+  if (started) {
+    ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look }));
+    banner('Loadout changes next round');
+    closeCustomize();
+    return;
+  }
+  started = true;
+  audio.start();
+  customize.hide();
+  $('hud').style.display = 'block';
+  loadChar(customize.char);
   for (const k of Object.keys(info.characters)) loadChar(k);
   connect();
   try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* needs a user gesture; the next click locks */ }
-};
+});
 if (params.has('auto')) $('go').click();

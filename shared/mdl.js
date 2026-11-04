@@ -360,18 +360,22 @@ export class Character {
   }
 
   // Root motion delta (local space, units) of a sequence from cycle 0 to cycle.
-  seqMovement(seq, cycle) {
+  // px picks the point along a sequence's first blend axis; without it the first animation is used.
+  seqMovement(seq, cycle, px = null) {
     const m = seq.model;
-    return m.animMovement(this._seqDescResolved(seq), cycle);
+    if (px === null || seq.groupSize[0] < 2) return m.animMovement(this._seqDescResolved(seq), cycle);
+    const x = px * (seq.groupSize[0] - 1), i = Math.min(Math.floor(x), seq.groupSize[0] - 2), f = x - i;
+    const a = m.animMovement(m.animDesc(m.seqAnimIndex(seq, i, 0)), cycle), b = m.animMovement(m.animDesc(m.seqAnimIndex(seq, i + 1, 0)), cycle);
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
   }
 
   // Normalized blend position of a sequence for move_x/move_y, honouring each axis' pose parameter
   // and range. Sequences without those parameters stay at their center.
-  blendFor(seq, moveX, moveY) {
+  blendFor(seq, moveX, moveY, wallrun = 0) {
     const axis = (i) => {
       const idx = seq.paramIndex[i];
       const name = idx >= 0 ? seq.model.poseParams[idx]?.name : null;
-      const v = name === 'move_x' ? moveX : name === 'move_y' ? moveY : null;
+      const v = name === 'move_x' ? moveX : name === 'move_y' ? moveY : name === 'wallrun' ? wallrun : null;
       const a = seq.paramStart[i], b = seq.paramEnd[i];
       if (v === null || a === b) return 0.5;
       return Math.max(0, Math.min(1, (v - a) / (b - a)));
@@ -519,7 +523,8 @@ function quatMul(p, q) {
 
 // ------------------------------------------------------------------ render mesh
 // Builds a flat skinned mesh for LOD0. Returns {positions, normals, uvs, boneIdx, boneW, meshes:[{material, start, count}]}.
-export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
+// body: names of the body parts set to their second sub-model; everything else draws sub-model 0, which is often empty
+export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0, body = null) {
   const vvd = new DataView(vvdBuf.buffer, vvdBuf.byteOffset, vvdBuf.byteLength);
   const vtx = new DataView(vtxBuf.buffer, vtxBuf.byteOffset, vtxBuf.byteLength);
   if (vvd.getUint32(0, true) !== 0x56534449) throw new Error('bad vvd');
@@ -552,12 +557,7 @@ export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
     const nModels = mdv.getInt32(mbp + 4, true), modelIdx = mdv.getInt32(mbp + 12, true);
     const vb = vbp + bp * 8;
     const vmOff = vb + vtx.getInt32(vb + 4, true);
-    // default body group 0 only (first sub-model that has meshes)
-    let chosen = 0;
-    for (let m = 0; m < nModels; m++) {
-      const o = mbp + modelIdx + m * 148;
-      if (mdv.getInt32(o + 72, true) > 0) { chosen = m; break; }
-    }
+    const chosen = nModels > 1 && body?.has(cstr(model.bytes, mbp + mdv.getInt32(mbp, true)).toLowerCase()) ? 1 : 0;
     const mo = mbp + modelIdx + chosen * 148;
     const serialBase = meshSerial;
     for (let m = 0; m < chosen; m++) meshSerial += 0;
@@ -598,7 +598,7 @@ export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0) {
       }
       const count = indices.length - start;
       let tex = material;
-      if (model.numSkinFam > 0 && material < model.numSkinRef) {
+      if (model.numSkinFam > skinFamily && material < model.numSkinRef) {
         tex = mdv.getInt16(model.skinIndex + skinFamily * model.numSkinRef * 2 + material * 2, true);
       }
       if (count) meshes.push({ material: model.textures[tex], start, count });

@@ -126,9 +126,16 @@ export class Audio {
 
   stop(v) { try { v.src.stop(); } catch { /* already finished */ } }
 
+  // [R 180384aca] the game silences a throwable with its "sounddispatchnull", an empty sound on the same channel
+  endStar(id) {
+    const ent = `star${id}`;
+    this.pos.delete(ent);
+    for (const v of [...this.voices]) if (v.ent === ent) this.stop(v);
+  }
+
   // Source's falloff: attenuation from the sound level, against a 1000 unit clip distance. 0 and very loud are flat.
   place(v) {
-    const p = v.ent != null ? this.pos.get(v.ent) : v.pos;
+    const p = (v.ent != null ? this.pos.get(v.ent) : null) ?? v.pos;
     let g = v.volume, pan = 0;
     if (p && this.eye && v.level > 0 && v.level < 130) {
       const d = [p[0] - this.eye[0], p[1] - this.eye[1], p[2] - this.eye[2]], dist = Math.hypot(d[0], d[1], d[2]);
@@ -201,6 +208,9 @@ export class Audio {
       case 'AE_CL_PLAYWEAPONSOUND': {
         const key = SWOOSH[opt.toLowerCase()];
         this.play((key && this.info.swordSounds?.[p.sw]?.[key]) || opt, { ent });
+        // an item's own swing plays with it [I: blended at swing_blend_vol, not read from the binary]
+        const swingItem = key && this.info.swordItems?.find((i) => i.id === p.it);
+        if (swingItem?.swing) this.play(swingItem.swing, { ent, volume: swingItem.swingVol });
         break;
       }
       case 'AE_BB_FOOTSTEP_SPLASH': {
@@ -257,7 +267,12 @@ export class Audio {
   onEvent(e, players, myId) {
     const sw = (id) => this.info.swordSounds?.[players?.find((p) => p.id === id)?.sw] ?? {};
     switch (e.type) {
-      case 'hit': this.play(sw(e.attacker)[HIT_KEY[e.stance] ?? 'soundhitbalanced'] ?? 'Weapon_Blade.Balanced_Hit', { pos: e.pos, ent: e.pos ? null : e.victim }); break;
+      case 'hit': {
+        this.play(sw(e.attacker)[HIT_KEY[e.stance] ?? 'soundhitbalanced'] ?? 'Weapon_Blade.Balanced_Hit', { pos: e.pos, ent: e.pos ? null : e.victim });
+        const item = this.info.swordItems?.find((i) => i.id === players?.find((p) => p.id === e.attacker)?.it);
+        if (item?.hit) this.play(item.hit, { pos: e.pos, ent: e.pos ? null : e.victim, volume: item.hitVol });
+        break;
+      }
       case 'blocked': this.play(sw(e.attacker).soundblocked ?? 'Weapon_Blade.Blocked', { pos: e.pos }); break;
       case 'break_block': this.play(sw(e.attacker).soundunblockable ?? 'Weapon_Blade.Penetrated', { pos: e.pos }); break;
       // [R client.dll 1803f73cd, 1803f746b] these sit beside the same effects fx.js plays for them
@@ -267,6 +282,19 @@ export class Audio {
       // [R client.dll 1803bcaf7, 1803bda75]
       case 'charge_tier': this.play(e.tier === 1 ? 'Player_Shared.ChargeTier2' : e.soft ? 'Player_Shared.ChargeTier3Soft' : 'Player_Shared.ChargeTier3', { ent: e.id }); break;
       case 'jump': this.play('Player_Shared.Jump', { ent: e.id }); break;
+      // [scripts/throwabletypes.txt] each type names its own sounds
+      case 'star_throw': {
+        const t = this.info.throwables?.[e.kind], ent = `star${e.star}`;
+        if (t) { this.pos.set(ent, e.pos); this.play(t.sounddispatch, { ent, pos: e.pos, still: () => this.pos.has(ent) }); }
+        break;
+      }
+      case 'star_hit': {
+        const t = this.info.throwables?.[e.kind];
+        this.endStar(e.star);
+        if (t) this.play(e.what === 'world' ? t.soundhitworld : e.what === 'player' ? t.soundhitplayer : t.soundblocked, { pos: e.pos });
+        break;
+      }
+      case 'feint': this.play('Weapon_Blade.Feint', { ent: e.id }); break; // [R 180349273]
       case 'grab': this.play('Player_Shared.GrabSuccess', { ent: e.attacker }); break;
       case 'death': { const c = players?.find((p) => p.id === e.victim)?.c; if (c) this.play(`Player_${c}.Die`, { ent: e.victim }); break; }
       case 'round_start': this.play(e.round >= e.maxRounds ? 'Announcer.RoundLast' : `Announcer.Round${e.round}`); break;

@@ -27,6 +27,7 @@ export class WorldLighting {
         stopdot: f(60), stopdot2: f(64), exponent: f(68) || 1, radius: f(72), c, l, q,
       });
     }
+    this.sky = this.lights.find((l) => l.type === EMIT_SKY) ?? null;
     // bsp_cubemap: where each of the map's reflection probes sits
     const cm = bsp.lump(42);
     this.cubemaps = [];
@@ -36,7 +37,7 @@ export class WorldLighting {
     }
   }
 
-  // The closest of the leaf's ambient samples. Six faces, +x -x +y -y +z -z.
+  // The leaf's ambient samples, blended. Six faces, +x -x +y -y +z -z.
   ambientCube(p) {
     const { dv } = this.bsp;
     const leaf = this.bsp.pointLeaf(p), cube = new Float32Array(18);
@@ -45,17 +46,20 @@ export class WorldLighting {
     if (!count) return cube;
     const lo = this.leaves.off + leaf * 32;
     const mn = [0, 2, 4].map((k) => dv.getInt16(lo + 8 + k, true)), mx = [0, 2, 4].map((k) => dv.getInt16(lo + 14 + k, true));
-    let best = -1, bestD = Infinity;
+    // [R engine.dll 1801781c0] every sample, weighted by 1/(d^2+1). Decoded at byte * 2^e: the table's 1/255 is undone by a 255.
+    let total = 0;
     for (let i = 0; i < count; i++) {
       const o = this.ambient.off + (first + i) * 28;
-      let d = 0;
+      let d = 1;
       for (let k = 0; k < 3; k++) d += (mn[k] + (mx[k] - mn[k]) * dv.getUint8(o + 24 + k) / 255 - p[k]) ** 2;
-      if (d < bestD) { bestD = d; best = o; }
+      const w = 1 / d;
+      total += w;
+      for (let f = 0; f < 6; f++) {
+        const c = o + f * 4, e = 2 ** dv.getInt8(c + 3);
+        cube[f * 3] += dv.getUint8(c) * e * w; cube[f * 3 + 1] += dv.getUint8(c + 1) * e * w; cube[f * 3 + 2] += dv.getUint8(c + 2) * e * w;
+      }
     }
-    for (let f = 0; f < 6; f++) {
-      const o = best + f * 4, e = 2 ** dv.getInt8(o + 3) / 255;
-      cube[f * 3] = dv.getUint8(o) * e; cube[f * 3 + 1] = dv.getUint8(o + 1) * e; cube[f * 3 + 2] = dv.getUint8(o + 2) * e;
-    }
+    for (let i = 0; i < 18; i++) cube[i] /= total;
     return cube;
   }
 
@@ -89,7 +93,8 @@ export class WorldLighting {
       const ratio = this._reach(l, p);
       if (ratio > 0) hits.push({ l, ratio, score: ratio * Math.max(l.color[0], l.color[1], l.color[2]) });
     }
-    hits.sort((a, b) => b.score - a.score);
+    // [R shaderapidx9 r_force_first_dynamic_light_to_directional_for_csm] the sun is light 0, the one the shadow map applies to
+    hits.sort((a, b) => (b.l.type === EMIT_SKY) - (a.l.type === EMIT_SKY) || b.score - a.score);
     for (const { l, ratio } of hits.slice(MAX_LIGHTS)) {
       const d = l.type === EMIT_SKY ? [-l.n[0], -l.n[1], -l.n[2]] : [l.pos[0] - p[0], l.pos[1] - p[1], l.pos[2] - p[2]];
       const len = Math.hypot(d[0], d[1], d[2]) || 1;

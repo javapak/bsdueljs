@@ -416,6 +416,79 @@ for (const ch of Object.keys(data.characters)) {
     check(top <= cvars.f('bb_chargeaccel_maxspeed') + 1, `${ch} charge over the cap ${top}`);
     if (ch === 'knight') console.log('charge speed every 0.5s', curve.join(' '));
   }
+  // same-side swings never side-cancel; the opposite side does, late enough [R 1803467c0]
+  {
+    const { w, p } = await setup(ch, 400);
+    p.sword = 'longsword';
+    p.buttons = IN.LEFT | IN.ATTACK; steps(w, 2); p.buttons = IN.LEFT; steps(w, 2);
+    const a = p.act;
+    if (a?.phase === 'swing' && a.dir === 3) {
+      let replaced = false;
+      for (let i = 0; i < a.lockDur / TICK - 2 && p.act === a; i++) { p.buttons = IN.LEFT | IN.ATTACK; w.step(); }
+      replaced = p.act !== a && a.lock > 0;
+      check(!replaced, `${ch} ${a.name} cancelled into its own side with ${a.lock.toFixed(2)}s of lock left`);
+    }
+    p.sword = undefined;
+  }
+  // feint: a real charge on the block button, its release has no tracer and a cut lock, then a cooldown [R 180349300, 180349550]
+  {
+    const { w, p } = await setup(ch, 400);
+    p.sword = 'katana';
+    const seen = [];
+    p.buttons = IN.BLOCK; w.step();
+    const a = p.act;
+    check(a?.feint && a.id === 3 && a.phase === 'charge', `${ch} block button didn't start a feint: ${a?.name}`);
+    if (a?.feint) {
+      seen.push(...w.events.filter((e) => e.type === 'feint'));
+      check(seen.length === 1, `${ch} feint event ${seen.length}`);
+      steps(w, 10);
+      check(a.phase === 'charge', `${ch} feint released while the button was held`);
+      const combo = p.comboIdx;
+      p.buttons = 0; steps(w, 2);
+      check(p.act === a && a.phase === 'swing' && a.trDone && !a.bladeRing.length, `${ch} feint release: ${a.phase} done ${a.trDone} samples ${a.bladeRing?.length}`);
+      const want = parseFloat(a.tierDef.lock_duration ?? '-1') * cvars.f(a.stanceType === 3 ? 'bb_feint_air_cancel_amount' : 'bb_feint_cancel_amount');
+      check(near(a.lockDur, want, 1e-6), `${ch} feint lock ${a.lockDur}, wanted ${want}`);
+      check(p.comboIdx === combo, `${ch} feint advanced the string`);
+      let hits = 0; const orig = w.resolveHit; w.resolveHit = () => { hits++; };
+      steps(w, Math.ceil(want / TICK) + 2);
+      w.resolveHit = orig;
+      check(p.act !== a && hits === 0, `${ch} feint hit ${hits}, action ${p.act?.name}`);
+      check(near(p.blockCooldown, cvars.f('bb_feint_cooldown'), 0.1), `${ch} feint cooldown ${p.blockCooldown}`);
+    }
+    // a charge can't be feinted, but the start of its swing can [R 180374f3c]
+    p.blockCooldown = 0; p.buttons = 0; steps(w, 4);
+    p.buttons = IN.ATTACK; steps(w, 3);
+    const charge = p.act;
+    if (charge?.phase === 'charge') {
+      p.buttons = IN.ATTACK | IN.BLOCK; w.step();
+      check(p.act === charge && !charge.feint, `${ch} feint replaced a charge: ${p.act?.name}`);
+      p.buttons = 0; w.step();
+      check(charge.phase === 'swing', `${ch} tap didn't release`);
+      if (charge.bladeRing.length <= 1 && charge.phase === 'swing') {
+        p.blockCooldown = 0; p.buttons = IN.BLOCK; w.step();
+        check(p.act === charge && charge.feint && charge.phase === 'swing', `${ch} feint didn't cut the swing: ${p.act?.name}`);
+      }
+    }
+    // a left click, then the block button while it charges: held through the release, the swing becomes a feint
+    {
+      const { w: w2, p: q } = await setup(ch, 400);
+      q.sword = 'katana';
+      q.buttons = IN.ATTACK; steps(w2, 2);
+      const c2 = q.act;
+      q.buttons = IN.ATTACK | IN.BLOCK; w2.step();
+      check(q.act === c2 && !q.act.feint, `${ch} feint during a charge`);
+      q.buttons = IN.BLOCK; steps(w2, 2);
+      check(w2.events.some((e) => e.type === 'feint' && e.id === q.id), `${ch} left click then block didn't feint: ${q.act?.name} ${q.act?.phase}`);
+      // [R 180372010] it stays on the swing's animation, with the time spent off the cut lock, and the string restarts
+      check(q.comboIdx === 0, `${ch} feint didn't reset the string: ${q.comboIdx}`);
+      if (q.act?.feint) {
+        const cut = parseFloat(q.act.tierDef.lock_duration ?? '-1') * cvars.f(q.act.stanceType === 3 ? 'bb_feint_air_cancel_amount' : 'bb_feint_cancel_amount');
+        check(near(q.act.lockDur, cut, 1e-6) && q.act.lock < cut && q.act.phase === 'swing' && q.act.t > 0 && q.act.trDone, `${ch} feint out of a swing: lock ${q.act.lock} of ${q.act.lockDur}, t ${q.act.t}`);
+      }
+      q.buttons = 0; q.sword = undefined;
+    }
+    p.buttons = 0; p.sword = undefined;
+  }
   // blade samples: pitch moves them within its clamp, and the ends are whole units [R 180389b77, 18038603f]
   {
     const { w, p } = await setup(ch, 400);
@@ -534,7 +607,8 @@ for (const ch of Object.keys(data.characters)) {
     p.sword = type;
     check(w.sword(p) === data.swordTypes[type], `${ch} ${type}: wrong sword`);
     const tech = data.swordTypes[type].blocktech.toLowerCase();
-    const want = { block: 'Block', parry: 'Parry', guard: 'Guard', feint: 'Block' }[tech];
+    if (tech === 'feint') { p.buttons = IN.BLOCK; w.step(); p.buttons = 0; check(p.act?.feint, `${ch} ${type} didn't feint: ${p.act?.name}`); continue; }
+    const want = { block: 'Block', parry: 'Parry', guard: 'Guard' }[tech];
     check(w.blockActionName(p) === want, `${ch} ${type}: ${w.blockActionName(p)}, tech ${tech}`);
     p.buttons = IN.BLOCK; w.step(); p.buttons = 0;
     check(p.act?.name === want, `${ch} ${type} block action ${p.act?.name}`);

@@ -32,9 +32,10 @@ const cvarTable = JSON.parse(readFileSync(join(here, '../shared/cvars_all.json')
 const cvars = new Cvars(cvarTable);
 const data = await GameData.load(async (p) => readFileSync(need(p), 'latin1'), cvars);
 const assets = new CharacterStore(async (p) => readFileSync(need(p)), data);
-const SWORD_LABELS = { longsword: 'Longsword (block)', katana: 'Katana (feint not built yet: blocks)', foil: 'Foil (guard)', jian: 'Jian (parry)', scimitar: 'Scimitar (block)' };
+const SWORD_LABELS = { longsword: 'Longsword (block)', katana: 'Katana (feint)', foil: 'Foil (guard)', jian: 'Jian (intercept)', scimitar: 'Scimitar (block)' };
 for (const k of Object.keys(data.characters)) await assets.preload(k);
 const bsp = new BSP(readFileSync(need(`maps/${args.map}.bsp`)));
+await bsp.addPropCollision(async (p) => { const f = findFile(p); return f ? readFileSync(f) : null; });
 const world = new World({ bsp, data, cvars, assets, map: args.map });
 console.log(`map ${args.map}, ${Object.keys(data.characters).length} characters, ${Object.keys(data.actions).length} actions`);
 
@@ -88,6 +89,18 @@ function addBot() {
 }
 function removeBot() { if (botPlayer) { world.removePlayer(botPlayer.id); botPlayer = null; } }
 
+// What a client asks to wear, kept to items for this character: one skin, mask and cape, one attachment per slot,
+// and always a mask because the fighter models have no head of their own.
+function validLook(ids, ch) {
+  const out = new Map();
+  for (const id of Array.isArray(ids) ? ids : []) {
+    const i = data.lookItems.find((x) => x.id === id);
+    if (i && (!i.character || i.character === ch)) out.set(i.kind === 'attachment' ? i.slot : i.kind, i.id);
+  }
+  if (!out.has('mask')) for (const id of data.defaultLook[ch]) out.set('mask', id);
+  return [...out.values()];
+}
+
 function onMessage(c, m) {
   if (m.t === 'join') {
     if (c.player) return;
@@ -96,6 +109,9 @@ function onMessage(c, m) {
     removeBot();
     c.player = new Player(nextId++, String(m.name || 'Player').slice(0, 24), ch);
     if (Object.hasOwn(SWORD_LABELS, m.sword)) c.player.sword = m.sword;
+    const item = data.swordItems.find((i) => i.id === m.item);
+    if (item) { c.player.sword = item.type; c.player.swordItem = item.id; }
+    c.player.look = validLook(m.look, ch);
     world.addPlayer(c.player);
     if (args.bot && world.players.length < 2) addBot();
     c.send({ t: 'welcome', id: c.player.id, map: args.map, tick: TICK });
@@ -105,6 +121,10 @@ function onMessage(c, m) {
     if (Number.isFinite(m.y)) c.player.viewYaw = m.y;
     if (Number.isFinite(m.p)) c.player.pitch = Math.max(-89, Math.min(89, m.p));
     c.lastSeq = m.s;
+  } else if (m.t === 'loadout' && c.player) {
+    // [I] from the customization screen in a match: takes effect when the next round starts
+    const ch = data.characters[m.character] ? m.character : c.player.character, item = data.swordItems.find((i) => i.id === m.item);
+    c.player.nextLoadout = { character: ch, look: validLook(m.look, ch), ...(item ? { sword: item.type, swordItem: item.id } : {}) };
   } else if (m.t === 'character' && c.player && data.characters[m.character]) {
     c.player.character = m.character;
   }
@@ -124,12 +144,12 @@ const rnd3 = (x) => Math.round(x * 1000) / 1000;
 function snapshot() {
   const d = world.duel;
   return {
-    t: 'snap', time: rnd(world.time), players: world.players.map((p) => {
+    t: 'snap', time: rnd(world.time), pj: world.stars.map((s) => ({ id: s.id, k: s.type, o: s.pos.map(rnd), v: s.vel.map(rnd) })), players: world.players.map((p) => {
       const an = world.animOf(p);
       return {
-        id: p.id, n: p.name, c: p.character, o: p.origin.map(rnd), v: p.vel.map(rnd), y: rnd(p.yaw), p: rnd(p.pitch), hp: p.health, al: p.alive, g: p.onGround, st: world.stanceNow(p), gs: p.stance, ci: world.time - p.comboIdxTime > cvars.f('bb_combo_reset_time') ? 0 : p.comboIdx, sw: p.sword || data.charSword[p.character], score: p.score, kn: p.kneeling, fz: p.frozen,
-        hs: p.hitstop > 0 ? 1 : 0, an: { b: an.base, bc: rnd3(an.baseCycle), u: an.upper, uc: rnd3(an.upperCycle), mx: rnd3(an.mx), my: rnd3(an.my), sp: rnd(an.speed), af: an.armsFrom, ch: an.charge && [an.charge[0], an.charge[1], rnd3(an.charge[2]), rnd3(an.charge[3]), rnd3(an.charge[4])], ld: an.land && [rnd3(an.land[0]), rnd3(an.land[1])], lg: rnd3(an.legs), tl: an.touch && [an.touch[0], rnd3(an.touch[1]), rnd3(an.touch[2])] },
-        a: p.act ? { n: p.act.name, ph: p.act.phase, ti: p.act.tier, ct: p.act.chargeTier, l: rnd(Math.max(0, p.act.lock)), cf: p.act.phase === 'charge' && p.act.chargeTotal > 0 ? rnd3(Math.min(1, p.act.t / p.act.chargeTotal)) : 0, ce: p.act.phase === 'charge' ? rnd3(p.act.t) : 0, tr: p.act.trCount > 0 && p.act.bladeRing?.length && !p.act.trDone ? 1 : 0, pw: (p.act.kind === 'parry' || p.act.kind === 'kneelparry') && p.act.t <= p.act.parryWindow ? 1 : 0 } : null,
+        id: p.id, n: p.name, c: p.character, o: p.origin.map(rnd), v: p.vel.map(rnd), y: rnd(p.yaw), p: rnd(p.pitch), hp: p.health, al: p.alive, g: p.onGround, st: world.stanceNow(p), gs: p.stance, ci: world.time - p.comboIdxTime > cvars.f('bb_string_reset_time') ? 0 : p.comboIdx, sw: p.sword || data.charSword[p.character], it: p.swordItem ?? data.charSwordItem[p.character], lk: p.look ?? data.defaultLook[p.character], score: p.score, kn: p.kneeling, fz: p.frozen,
+        hs: p.hitstop > 0 ? 1 : 0, an: { wr: an.wr ? rnd3(an.wr) : undefined, b: an.base, bc: rnd3(an.baseCycle), u: an.upper, uc: rnd3(an.upperCycle), mx: rnd3(an.mx), my: rnd3(an.my), sp: rnd(an.speed), af: an.armsFrom, ch: an.charge && [an.charge[0], an.charge[1], rnd3(an.charge[2]), rnd3(an.charge[3]), rnd3(an.charge[4])], ld: an.land && [rnd3(an.land[0]), rnd3(an.land[1])], lg: rnd3(an.legs), tl: an.touch && [an.touch[0], rnd3(an.touch[1]), rnd3(an.touch[2])] },
+        a: p.act ? { th: p.act.kind === 'throwweapon' && !p.act.thrown ? 1 : 0, n: p.act.name, ph: p.act.phase, ti: p.act.tier, ct: p.act.chargeTier, l: rnd(Math.max(0, p.act.lock)), cf: p.act.phase === 'charge' && p.act.chargeTotal > 0 ? rnd3(Math.min(1, p.act.t / p.act.chargeTotal)) : 0, ce: p.act.phase === 'charge' ? rnd3(p.act.t) : 0, tr: p.act.trCount > 0 && p.act.bladeRing?.length && !p.act.trDone ? 1 : 0, pw: (p.act.kind === 'parry' || p.act.kind === 'kneelparry') && p.act.t <= p.act.parryWindow ? 1 : 0 } : null,
       };
     }),
     duel: { s: d.state, tm: rnd(Math.max(0, d.timer)), r: d.round, w: d.wins, res: d.results, f: d.fighters, win: d.winner, max: cvars.f('vs_duel_rounds') },
@@ -145,7 +165,7 @@ const server = http.createServer((req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   if (path === '/api/info') {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist }])), swords: SWORD_LABELS, charSword: data.charSword, swordSounds: Object.fromEntries(Object.entries(data.swordTypes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([n]) => n.startsWith('sound')))])), strings: Object.fromEntries(Object.keys(data.characters).map((k) => [k, [0, 1, 2, 3].map((st) => { const f = data.stanceFor(k, st)?.forward; return (f?.['action[]'] || [f?.action]).filter(Boolean).length; })])), bot: args.bot }));
+    res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist, desc: data.charText[k], menuIdle: v.menuidleanim, menuSelect: v.menuselectanim }])), swords: SWORD_LABELS, swordNames: Object.fromEntries(Object.keys(SWORD_LABELS).map((k) => [k, SWORD_LABELS[k].replace(/ \(.*/, '')])), charSword: data.charSword, charSwordItem: data.charSwordItem, swordItems: data.swordItems, lookItems: data.lookItems, defaultLook: data.defaultLook, throwables: data.throwables, charThrowable: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, v.throwableweapon])), swordSounds: Object.fromEntries(Object.entries(data.swordTypes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([n]) => n.startsWith('sound')))])), strings: Object.fromEntries(Object.keys(data.characters).map((k) => [k, [0, 1, 2, 3].map((st) => { const f = data.stanceFor(k, st)?.forward; return (f?.['action[]'] || [f?.action]).filter(Boolean).length; })])), bot: args.bot }));
     return;
   }
   if (path.startsWith('/game/')) {
@@ -185,4 +205,4 @@ setInterval(() => {
     if (tickNo % 2 === 0) { const s = snapshot(); for (const c of conns) c.send(s); }
   }
 }, 5);
-server.listen(+args.port, args.host, () => console.log(`duel server listening on http://localhost:${args.port}${args.bot ? ' (bot enabled)' : ''}`));
+server.listen(+args.port, args.host, () => console.log(`duel server listening on http://${args.host ? args.host : 'localhost'}:${args.port}${args.bot ? ' (bot enabled)' : ''}`));

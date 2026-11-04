@@ -14,6 +14,9 @@ export function cstr(u8, off) {
   return dec.decode(u8.subarray(off, e));
 }
 
+import { parseConvexPieces, propMatrix, placePiece } from './phy.js';
+const PROP_CELL = 256;
+
 export class BSP {
   constructor(buffer) {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -320,6 +323,7 @@ export class BSP {
     this.stamp = (this.stamp + 1) >>> 0;
     this._rec(0, 0, 1, t.s, t.e, t);
     this._traceDisp(t);
+    if (this.propGrid) this._traceProps(t);
     const fr = t.fraction;
     return {
       fraction: fr, startsolid: t.startsolid, allsolid: t.allsolid, normal: t.normal, contents: t.contents, texinfo: t.texinfo,
@@ -413,6 +417,93 @@ export class BSP {
       t.normal = [this.planeN[hn * 3], this.planeN[hn * 3 + 1], this.planeN[hn * 3 + 2]];
       t.contents = this.brushContents[b];
       t.texinfo = this.sideTexinfo[hs];
+    }
+  }
+
+  // Solid static props, from their models' .phy. read(path) gives the file's bytes, or null if it's missing.
+  async addPropCollision(read) {
+    const { names, props } = this.staticProps();
+    const pieces = new Map();
+    this.propHulls = [];
+    this.propGrid = new Map();
+    for (const pr of props ?? []) {
+      if (pr.solid !== 6) continue;
+      const name = names[pr.model];
+      if (!pieces.has(name)) {
+        const bytes = await read(name.replace(/\.mdl$/i, '.phy'));
+        let list = [];
+        if (bytes) { try { list = parseConvexPieces(bytes); } catch (e) { console.warn('phy', name, e.message); } }
+        pieces.set(name, list);
+      }
+      const m = propMatrix(pr.origin, pr.angles);
+      for (const piece of pieces.get(name)) {
+        const hull = placePiece(piece, m);
+        hull.stamp = 0;
+        this.propHulls.push(hull);
+        for (let x = Math.floor(hull.mn[0] / PROP_CELL); x <= Math.floor(hull.mx[0] / PROP_CELL); x++) {
+          for (let y = Math.floor(hull.mn[1] / PROP_CELL); y <= Math.floor(hull.mx[1] / PROP_CELL); y++) {
+            const key = x * 65536 + y;
+            let cell = this.propGrid.get(key);
+            if (!cell) this.propGrid.set(key, (cell = []));
+            cell.push(hull);
+          }
+        }
+      }
+    }
+  }
+
+  _traceProps(t) {
+    const { s, e, ext } = t;
+    const lo = [Math.min(s[0], e[0]) - ext[0], Math.min(s[1], e[1]) - ext[1], Math.min(s[2], e[2]) - ext[2]];
+    const hi = [Math.max(s[0], e[0]) + ext[0], Math.max(s[1], e[1]) + ext[1], Math.max(s[2], e[2]) + ext[2]];
+    const test = (h) => {
+      if (h.stamp === this.stamp) return;
+      h.stamp = this.stamp;
+      if (h.mn[0] > hi[0] || h.mx[0] < lo[0] || h.mn[1] > hi[1] || h.mx[1] < lo[1] || h.mn[2] > hi[2] || h.mx[2] < lo[2]) return;
+      this._clipHull(h, t);
+    };
+    const x0 = Math.floor(lo[0] / PROP_CELL), x1 = Math.floor(hi[0] / PROP_CELL), y0 = Math.floor(lo[1] / PROP_CELL), y1 = Math.floor(hi[1] / PROP_CELL);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > this.propGrid.size) { for (const h of this.propHulls) test(h); return; }
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        const cell = this.propGrid.get(x * 65536 + y);
+        if (cell) for (const h of cell) test(h);
+      }
+    }
+  }
+
+  // the same clip as a brush
+  _clipHull(h, t) {
+    let enter = -1, leave = 1, hn = null, getout = false, startout = false;
+    const { s, e, ext } = t;
+    for (const p of h.planes) {
+      if (t.isPoint && p.bevel) continue;
+      const n = p.n;
+      const dist = p.d + Math.abs(ext[0] * n[0]) + Math.abs(ext[1] * n[1]) + Math.abs(ext[2] * n[2]);
+      const d1 = s[0] * n[0] + s[1] * n[1] + s[2] * n[2] - dist;
+      const d2 = e[0] * n[0] + e[1] * n[1] + e[2] * n[2] - dist;
+      if (d2 > 0) getout = true;
+      if (d1 > 0) startout = true;
+      if (d1 > 0 && d2 >= d1) return;
+      if (d1 <= 0 && d2 <= 0) continue;
+      if (d1 > d2) {
+        const f = (d1 - DIST_EPSILON) / (d1 - d2);
+        if (f > enter) { enter = f; hn = n; }
+      } else {
+        const f = (d1 + DIST_EPSILON) / (d1 - d2);
+        if (f < leave) leave = f;
+      }
+    }
+    if (!startout) {
+      t.startsolid = true;
+      if (!getout) { t.allsolid = true; t.fraction = 0; t.contents = CONTENTS_SOLID; }
+      return;
+    }
+    if (enter < leave && enter > -1 && enter < t.fraction) {
+      t.fraction = Math.max(0, enter);
+      t.normal = hn;
+      t.contents = CONTENTS_SOLID;
+      t.texinfo = -1;
     }
   }
 

@@ -55,7 +55,7 @@ const text = async (path) => {
   return new TextDecoder(u8[0] === 0xff && u8[1] === 0xfe ? 'utf-16le' : 'utf-8').decode(u8);
 };
 
-async function vtfUrl(path) {
+export async function vtfUrl(path) {
   const r = await fetch('/game/materials/' + path + '.vtf');
   if (!r.ok) return null;
   const t = parseVTF(new Uint8Array(await r.arrayBuffer()), 512);

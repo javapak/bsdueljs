@@ -98,6 +98,24 @@ const INIT = {
     const n = get(o, 'particles to map from start to end', 100), t = (s.emitted % Math.max(1, n)) / Math.max(1, n);
     setPos(p, [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], dt);
   },
+  'Position Along Path Random'(o, p, s, dt) {
+    const a = s.cp(get(o, 'start control point number', 0)).pos, b = s.cp(get(o, 'end control point number', 0)).pos, t = Math.random();
+    const d = rndDir(), r = get(o, 'maximum distance', 0) * Math.cbrt(Math.random());
+    setPos(p, [a[0] + (b[0] - a[0]) * t + d[0] * r, a[1] + (b[1] - a[1]) * t + d[1] * r, a[2] + (b[2] - a[2]) * t + d[2] * r], dt);
+  },
+  // Lifetime fits the trip to the end point
+  'Move Particles Between 2 Control Points'(o, p, s, dt) {
+    const end = s.cp(get(o, 'end control point', 1)).pos, sp = rnd(get(o, 'minimum speed', 1), get(o, 'maximum speed', 1)), j = rndDir(), sprd = get(o, 'end spread', 0);
+    const to = [end[0] + j[0] * sprd - p.x, end[1] + j[1] * sprd - p.y, end[2] + j[2] * sprd - p.z], l = Math.hypot(to[0], to[1], to[2]) || 1;
+    const dir = [to[0] / l, to[1] / l, to[2] / l], off = get(o, 'start offset', 0);
+    setPos(p, [p.x + dir[0] * off, p.y + dir[1] * off, p.z + dir[2] * off], dt, [dir[0] * sp, dir[1] * sp, dir[2] * sp]);
+    p.life = Math.max(0, (l - off - get(o, 'end offset', 0)) / (sp || 1));
+  },
+  // The sheet's span for the particle's sequence; until the material has loaded it keeps its current lifetime
+  'Lifetime From Sequence'(o, p, s) {
+    const seqs = s.host.sheetOf?.(s.def.material), seq = seqs?.[p.seq] ?? seqs?.[0];
+    if (seq) p.life = seq.total / (get(o, 'Frames Per Second', 30) || 30);
+  },
   'Position From Parent Particles'(o, p, s, dt) {
     const q = s.parent?.particles;
     if (!q?.length) { setPos(p, s.cp(0).pos, dt); return; }
@@ -217,6 +235,32 @@ const OP = {
     }
   },
   'Rotation Basic'(o, s, dt) { for (const p of s.particles) p.rot += p.rotSpeed * dt; },
+  'Rotation Spin Roll'(o, s, dt, k) {
+    const rate = get(o, 'spin_rate_degrees', 0) * D2R, stop = get(o, 'spin_stop_time', 0), min = get(o, 'spin_rate_min', 0) * D2R;
+    for (const p of s.particles) p.rot += (stop > 0 ? min + (rate - min) * (1 - clamp01(p.age / stop)) : rate) * dt * k;
+  },
+  // [I] the offset is applied per 30Hz tick, not read from the binary. Moving only the position acts as a velocity.
+  'Oscillate Vector'(o, s, dt, k) {
+    const lo = o['oscillation rate min'] ?? [0, 0, 0], hi = o['oscillation rate max'] ?? [0, 0, 0], fa = o['oscillation frequency min'] ?? [1, 1, 1], fb = o['oscillation frequency max'] ?? [1, 1, 1];
+    const field = get(o, 'oscillation field', 0), mul = get(o, 'oscillation multiplier', 2), ph = get(o, 'oscillation start phase', 0.5), prop = get(o, 'proportional 0/1', true);
+    const t0 = get(o, 'start time min', 0), t1 = get(o, 'end time min', 1e9), step = dt * 30 * k;
+    if (field !== 0 && field !== 6) return;
+    for (const p of s.particles) {
+      const osc = (p.osc ??= [rnd(lo[0], hi[0]), rnd(lo[1], hi[1]), rnd(lo[2], hi[2]), rnd(fa[0], fb[0]), rnd(fa[1], fb[1]), rnd(fa[2], fb[2])]);
+      const t = prop ? p.age / (p.life || 1) : p.age;
+      if (t < t0 || t > t1) continue;
+      const w = (i) => osc[i] * Math.sin(Math.PI * (t * osc[3 + i] * mul + ph)) * step;
+      if (field === 0) { p.x += w(0); p.y += w(1); p.z += w(2); } else { p.r = clamp01(p.r + w(0)); p.g = clamp01(p.g + w(1)); p.b = clamp01(p.b + w(2)); }
+    }
+  },
+  // Kills what's passed the plane in the normal's direction; winter's landing splash is held under it this way
+  'Cull when crossing plane'(o, s) {
+    const c = s.cp(get(o, 'Control Point for point on plane', 0)).pos, n = o['Plane Normal'] ?? [0, 0, 1], off = get(o, 'Cull plane offset', 0);
+    const d = c[0] * n[0] + c[1] * n[1] + c[2] * n[2] + off;
+    for (const p of s.particles) if (p.x * n[0] + p.y * n[1] + p.z * n[2] > d) p.dead = true;
+  },
+  // Culls against the model at the control point. A map effect's control point has none, so nothing is culled.
+  'Cull relative to model'() {},
   'Movement Lock to Control Point'(o, s) {
     const cp = s.cp(get(o, 'control_point_number', 0)), x = cp.pos[0] - cp.prev[0], y = cp.pos[1] - cp.prev[1], z = cp.pos[2] - cp.prev[2];
     if (x || y || z) for (const p of s.particles) moveBoth(p, x, y, z);
@@ -280,6 +324,16 @@ const CONSTRAINT = {
     };
   },
   'Constrain distance to path between two control points'() { return null; },
+  'Constrain distance to control point'(o, s) {
+    const cp = s.cp(get(o, 'control point number', 0)), off = o['offset of center'] ?? [0, 0, 0], min = get(o, 'minimum distance', 0), max = get(o, 'maximum distance', 100);
+    const c = o['global center point'] ? off : [cp.pos[0] + off[0], cp.pos[1] + off[1], cp.pos[2] + off[2]];
+    return (p) => {
+      const x = p.x - c[0], y = p.y - c[1], z = p.z - c[2], l = Math.hypot(x, y, z) || 1;
+      if (l >= min && l <= max) return;
+      const k = (l < min ? min : max) / l;
+      p.x = c[0] + x * k; p.y = c[1] + y * k; p.z = c[2] + z * k;
+    };
+  },
 };
 
 const LIST = (d, k) => d[k] || [];
@@ -304,7 +358,7 @@ export class ParticleLibrary {
       for (const o of LIST(d, 'operators')) if (!OP[o.functionName]) out.add('op:' + o.functionName);
       for (const o of LIST(d, 'forces')) if (!FORCE[o.functionName]) out.add('force:' + o.functionName);
       for (const o of LIST(d, 'constraints')) if (!CONSTRAINT[o.functionName]) out.add('constraint:' + o.functionName);
-      for (const o of LIST(d, 'emitters')) if (!/^emit_(instantaneously|continuously)$/.test(o.functionName)) out.add('emit:' + o.functionName);
+      for (const o of LIST(d, 'emitters')) if (!/^emit_(instantaneously|continuously)$|^emit noise$/.test(o.functionName)) out.add('emit:' + o.functionName);
       for (const o of LIST(d, 'renderers')) if (!RENDERERS.has(o.functionName)) out.add('render:' + o.functionName);
     }
     return out;
@@ -359,6 +413,16 @@ export class ParticleInstance {
         const dur = get(o, 'emission_duration', 0);
         if (dur > 0 && this.t - st > dur) continue;
         e.acc += get(o, 'emission_rate', 100) * dt;
+        const n = Math.floor(e.acc);
+        e.acc -= n;
+        if (n > 0) this._emit(n, dt);
+      } else if (o.functionName === 'emit noise') {
+        const dur = get(o, 'emission duration', 0);
+        if (dur > 0 && this.t - st > dur) continue;
+        // [I] the rate wanders smoothly between the limits; Source's noise function itself isn't reproduced
+        const x = this.t * get(o, 'time noise coordinate scale', 0.1) + get(o, 'time coordinate offset', 0);
+        const n01 = 0.5 + 0.25 * (Math.sin(x * 6.283) + Math.sin(x * 15.71 + 1.3));
+        e.acc += (get(o, 'emission minimum', 0) + (get(o, 'emission maximum', 100) - get(o, 'emission minimum', 0)) * n01) * dt;
         const n = Math.floor(e.acc);
         e.acc -= n;
         if (n > 0) this._emit(n, dt);

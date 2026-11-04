@@ -7,6 +7,7 @@ const H = [[-13, -13, 0], [13, 13, 72]];
 let bad = 0;
 for (const m of ['duel_box', 'duel_practice_box', 'duel_temple', 'duel_monastery', 'duel_castle', 'duel_district', 'duel_winter']) {
   const b = new BSP(readFileSync(`${G}${m}.bsp`));
+  await b.addPropCollision(async (p) => { try { return readFileSync(`${G}../${p}`); } catch { return null; } });
   const sp = b.entities.filter((e) => e.classname === 'berimbau_spawn' && e.origin).map((e) => ({ o: e.origin.split(' ').map(Number), d: e.duel, t: e.duelteam }));
   const out = [];
   for (const ar of b.entities.filter((e) => e.classname === 'berimbau_duel').map((e) => e.targetname).sort()) {

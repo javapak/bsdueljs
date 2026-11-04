@@ -29,14 +29,53 @@ export class FX {
       traceNormal: (a, b) => { const t = bsp.traceBox(a, b, [0, 0, 0], [0, 0, 0], 1); return t.fraction < 1 && !t.startsolid ? { pos: t.endpos, normal: t.normal } : null; },
       bonesOf: (id) => this.players.get(id)?.bonePoints,
       localPlayer: () => this.localPos,
+      sheetOf: (material) => (material ? this._material(material)?.sheet : null),
     };
   }
 
+  // Every file in the game's manifest, later files replacing earlier definitions of the same name
   async load() {
-    await Promise.all(PCF_FILES.map(async (f) => {
-      const b = await this.fetchGame(`particles/${f}.pcf`);
-      if (b) this.lib.add(new TextDecoder('latin1').decode(b));
-    }));
+    const list = await this.fetchGame('particles/particles_manifest.txt');
+    const files = list ? [...new TextDecoder('latin1').decode(list).matchAll(/"file"\s+"!?([^"]+)"/g)].map((m) => m[1]) : PCF_FILES.map((f) => `particles/${f}.pcf`);
+    const data = await Promise.all(files.map((f) => this.fetchGame(f)));
+    for (const b of data) if (b) this.lib.add(new TextDecoder('latin1').decode(b));
+    this.startMapEffects();
+  }
+
+  // info_particle_system: control point 0 is the entity, cpointN names the entity for point N. Starts active, or
+  // when the map's logic_auto starts it on spawn; effects started later by other map logic aren't run.
+  startMapEffects() {
+    const ents = this.bsp.entities, onSpawn = new Set();
+    for (const e of ents) if (e.classname === 'logic_auto' && e.OnMapSpawn) { const [target, input] = String(e.OnMapSpawn).split(/[\x1b,]/); if (input === 'Start') onSpawn.add(target); }
+    const pos = (e) => e.origin.split(' ').map(Number);
+    for (const e of ents) {
+      if (e.classname !== 'info_particle_system' || !this.lib.systems.has(e.effect_name)) continue;
+      if (e.start_active !== '1' && !onSpawn.has(e.targetname)) continue;
+      const [pitch, yaw] = (e.angles ?? '0 0 0').split(' ').map((x) => x * Math.PI / 180);
+      const cs = Math.cos(pitch), sn = Math.sin(pitch);
+      const fwd = [cs * Math.cos(yaw), cs * Math.sin(yaw), -sn];
+      const up = [Math.cos(yaw) * sn, Math.sin(yaw) * sn, cs];
+      const cps = [makeCP(pos(e), fwd, up)];
+      for (let i = 1; i < 64; i++) {
+        const name = e[`cpoint${i}`];
+        const t = name && ents.find((x) => x.targetname === name && x.origin);
+        if (t) cps[i] = makeCP(pos(t));
+      }
+      this.spawn(e.effect_name, cps);
+    }
+  }
+
+  // A flying throwable's trail follows it; it stops emitting when the throwable is gone
+  starTrail(id, pos, vel, type) {
+    this.stars ??= new Map();
+    let h = this.stars.get(id);
+    if (!h) { h = this.spawn(type.particletrail, makeCP(pos, vel)); if (!h) return; this.stars.set(id, h); }
+    h.inst.setCP(0, makeCP(pos, vel));
+  }
+
+  endStarTrails(live) {
+    if (!this.stars) return;
+    for (const [id, h] of this.stars) if (!live.has(id)) { h.inst.stop(); this.stars.delete(id); }
   }
 
   spawn(name, cps, follow = null) {
@@ -55,7 +94,10 @@ export class FX {
   onEvent(e, players) {
     const pl = (id) => players?.find((p) => p.id === id);
     const at = (pos, dir) => makeCP(pos, dir ?? [1, 0, 0]);
+    const star = this.throwables?.[e.kind];
     switch (e.type) {
+      case 'star_throw': if (star) this.spawn(star.particledispatch, at(e.pos)); return;
+      case 'star_hit': if (star) this.spawn(e.what === 'world' ? star.particlehitworld : e.what === 'player' ? star.particlehitplayer : star.particleblocked, at(e.pos, e.normal)); return;
       case 'hit': { // case 0, by the attacker's stance
         const name = ['balanced_hit', 'light_hit', 'heavy_hit'][e.stance] ?? 'balanced_hit';
         this.spawn(name, at(e.pos, e.dir));
@@ -63,6 +105,13 @@ export class FX {
       }
       case 'blocked': this.spawn('wallhit_spark', at(e.pos, e.dir)); break; // case 1
       case 'guarded': this.spawn('guard_fx', at(e.pos, e.dir)); break;
+      case 'feint': { // [R server 18034925a] at the eyes
+        const st = this.players.get(e.id);
+        if (!st) break;
+        const m = st.char.attachmentWorld('eyes', st.world);
+        this.spawn('feint_fx', [m ? makeCP(attPos(m), flat(attFwd(m), [0, 0, 0])) : makeCP(center(st.p.o))]);
+        break;
+      }
       case 'world_hit': this.spawn('wallhit_spark', at(e.pos, e.normal ?? e.dir)); break; // case 1 from the world trace [1803dd200]
       case 'intercepted': { // case 2: both at the defender's center
         const d = pl(e.defender), c = d ? center(d.o) : e.pos;

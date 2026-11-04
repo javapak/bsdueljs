@@ -3,20 +3,50 @@
 import { parseKV, kvGet } from '/shared/kv.js';
 import { parseVTF, decodeLevel, isBCFormat } from './vtf.js';
 import { Model, buildMesh } from '/shared/mdl.js';
+import { JiggleBones, jiggleInfo } from '/shared/jiggle.js';
 import { SURF_TRANS, SURF_NODRAW, SURF_SKY, SURF_SKY2D, SURF_TRIGGER, SURF_SKIP, SURF_HINT } from '/shared/bsp.js';
 const SURF_BUMPLIGHT = 0x800;
 import { matMul, quatMatrix } from '/shared/mathx.js';
 import { WorldLighting } from './lighting.js';
+import { propMatrix } from '/shared/phy.js';
+import { Exposure, tonemapSettings } from '/shared/exposure.js';
 
 // LightmappedGeneric and WorldVertexTransition, ported from lightmappedgeneric_ps30. Output is linear light times the
 // tonemap scale (cLightScale.x), which the game's sRGB framebuffer write encodes. CSM shadows aren't in yet.
 const WORLD_WGSL = /* wgsl */`
 override CUT: f32 = -1.0;
-struct Cam { vp: mat4x4f, eye: vec4f, sun: vec4f, fog: vec4f };
+struct Cam { vp: mat4x4f, eye: vec4f, sun: vec4f, fog: vec4f, csm: array<mat4x4f, 3>, csmColor: vec4f, csmParam: vec4f };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var lm: texture_2d<f32>;
 @group(0) @binding(3) var lmSamp: sampler;
+@group(0) @binding(6) var lmSun: texture_2d<f32>;
+@group(0) @binding(4) var csmTex: texture_depth_2d;
+@group(0) @binding(5) var csmSamp: sampler_comparison;
+// [R lightmappedgeneric_ps30] nine taps: corners 1/16, edges 1/8, center 1/4
+fn csmPcf(uv: vec2f, z: f32) -> f32 {
+  let t = vec2f(1.0 / 3072.0, 1.0 / 1024.0);
+  var s = textureSampleCompareLevel(csmTex, csmSamp, uv, z) * 0.25;
+  for (var i = 0; i < 4; i++) {
+    let a = vec2f(select(-1.0, 1.0, (i & 1) == 0), select(-1.0, 1.0, (i & 2) == 0));
+    s += textureSampleCompareLevel(csmTex, csmSamp, uv + a * t, z) * 0.0625;
+    s += textureSampleCompareLevel(csmTex, csmSamp, uv + select(vec2f(0, a.y), vec2f(a.x, 0), (i & 1) == 0) * t, z) * 0.125;
+  }
+  return s;
+}
+fn csmCascade(i: i32, c: vec4f) -> f32 { return csmPcf(vec2f((c.x * 0.5 + 0.5 + f32(i)) / 3.0, 0.5 - c.y * 0.5), c.z - 0.00015); }
+// 1 lit, 0 shadowed; the first cascade holding the point, blended into the next near its edge, fading out with distance
+fn csmShadow(w: vec3f) -> f32 {
+  if (cam.csmColor.w == 0.0) { return 1.0; }
+  var s = 1.0;
+  let c0 = cam.csm[0] * vec4f(w, 1); let c1 = cam.csm[1] * vec4f(w, 1); let c2 = cam.csm[2] * vec4f(w, 1);
+  let e0 = max(abs(c0.x), abs(c0.y)); let e1 = max(abs(c1.x), abs(c1.y)); let e2 = max(abs(c2.x), abs(c2.y));
+  if (e0 < 0.98) { s = csmCascade(0, c0); if (e0 > 0.8) { s = mix(s, csmCascade(1, c1), (e0 - 0.8) / 0.18); } }
+  else if (e1 < 0.98) { s = csmCascade(1, c1); if (e1 > 0.8) { s = mix(s, csmCascade(2, c2), (e1 - 0.8) / 0.18); } }
+  else if (e2 < 0.98) { s = csmCascade(2, c2); }
+  let d = w - cam.eye.xyz;
+  return mix(s, 1.0, saturate(dot(d, d) * cam.csmParam.x + cam.csmParam.y));
+}
 // tint: lightmap tint. env: envmap tint, contrast. flags: bump (1 normal, 2 ssbump), envmap, mask (1 bump alpha, 2 inverted base alpha, 3 texture), selfillum.
 // opts: saturation, unlit, detail, detail scale. extra: seamless scale, detail blend factor.
 struct M { tint: vec4f, env: vec4f, flags: vec4f, opts: vec4f, extra: vec4f };
@@ -55,17 +85,23 @@ fn tex(t: texture_2d<f32>, i: O) -> vec4f {
   const B0 = vec3f(0.816496611, 0, 0.577350259);
   const B1 = vec3f(-0.408248335, 0.707106769, 0.577350259);
   const B2 = vec3f(-0.408248216, -0.707106829, 0.577350259);
-  var light = flat_;
+  let s0 = textureSampleLevel(lmSun, lmSamp, i.luv, 0).r;
+  let s1 = textureSampleLevel(lmSun, lmSamp, i.luv + vec2f(i.lstep, 0), 0).r;
+  let s2 = textureSampleLevel(lmSun, lmSamp, i.luv + vec2f(i.lstep * 2.0, 0), 0).r;
+  let s3 = textureSampleLevel(lmSun, lmSamp, i.luv + vec2f(i.lstep * 3.0, 0), 0).r;
+  let blocked = 1.0 - csmShadow(i.w);
+  var light = flat_ - s0 * cam.csmColor.rgb * blocked;
   var ts = vec3f(0, 0, 1);
   if (m.flags.x == 1.0) {
     ts = nt.xyz * 2.0 - 1.0;
     var dp = vec3f(saturate(dot(ts, B0)), saturate(dot(ts, B1)), saturate(dot(ts, B2)));
     dp *= dp;
-    light = (dp.x * l1 + dp.y * l2 + dp.z * l3) / dot(dp, vec3f(1));
+    light = (dp.x * l1 + dp.y * l2 + dp.z * l3 - dot(dp, vec3f(s1, s2, s3)) * cam.csmColor.rgb * blocked) / dot(dp, vec3f(1));
   } else if (m.flags.x == 2.0) {
     ts = normalize(B0 * nt.x + B1 * nt.y + B2 * nt.z);
-    light = nt.x * l1 + nt.y * l2 + nt.z * l3;
+    light = nt.x * l1 + nt.y * l2 + nt.z * l3 - (nt.x * s1 + nt.y * s2 + nt.z * s3) * cam.csmColor.rgb * blocked;
   }
+  light = max(light, vec3f(0));
   light *= m.tint.rgb;
   var out_ = c.rgb * light;
   if (m.flags.w > 0.0) { out_ = mix(out_, c.rgb, c.a); }
@@ -82,15 +118,124 @@ fn tex(t: texture_2d<f32>, i: O) -> vec4f {
   }
   return finish(out_);
 }`;
-// VertexLitGeneric and its phong path, shared by props and characters. Ported from phong_ps30.
-const MODEL_COMMON = /* wgsl */`
-struct Cam { vp: mat4x4f, eye: vec4f, sun: vec4f, fog: vec4f };
+// [R water_ps30] the flow map, fresnel and refraction. The live game reflects a second render of the scene; here the
+// reflection comes from the material's cubemap, the same sampling as the shader's envmap variant.
+const WATER_WGSL = /* wgsl */`
+struct Cam { vp: mat4x4f, eye: vec4f, sun: vec4f, fog: vec4f, csm: array<mat4x4f, 3>, csmColor: vec4f, csmParam: vec4f };
+struct W { inv: mat4x4f, right: vec4f, up: vec4f, time: vec4f };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var lm: texture_2d<f32>;
+@group(0) @binding(3) var edge: sampler;
+@group(0) @binding(4) var scene: texture_2d<f32>;
+@group(0) @binding(5) var depth: texture_depth_2d;
+@group(0) @binding(6) var<uniform> w: W;
+// flow: 1/world uv scale, 1/normal uv scale, bump strength, has flow map. flow2: interval, scroll distance, noise scale, time scale.
+// tint: reflect tint, refract amount. fog: color, enabled. range: fog start, end, lightmap fog, 1 for the Refract shader.
+// A Refract material uses flow2 as the normal map's scroll per second and tint as $refracttint.
+struct M { flow: vec4f, flow2: vec4f, tint: vec4f, fog: vec4f, range: vec4f };
+@group(1) @binding(0) var normalMap: texture_2d<f32>;
+@group(1) @binding(1) var flowMap: texture_2d<f32>;
+@group(1) @binding(2) var noise: texture_2d<f32>; // the refract tint texture on a Refract material
+@group(1) @binding(3) var envmap: texture_cube<f32>;
+@group(1) @binding(4) var<uniform> m: M;
+struct V { @location(0) pos: vec3f, @location(1) uv: vec2f, @location(2) luv: vec2f };
+struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) luv: vec2f, @location(2) w: vec3f, @location(3) cw: f32 };
+@vertex fn vs(v: V) -> O { var o: O; o.p = cam.vp * vec4f(v.pos, 1); o.uv = v.uv; o.luv = v.luv; o.w = v.pos; o.cw = o.p.w; return o; }
+fn surfaceNormal(i: O) -> vec3f {
+  if (m.flow.w == 0.0) { return vec3f(textureSample(normalMap, samp, i.uv).xy * 2.0 - 1.0, 1.0); }
+  // Two scrolling layers half a cycle apart, each jumping to a new place while the other is at full weight
+  let world = vec2f(i.w.x, -i.w.y);
+  let t = w.time.x * m.flow2.w / (2.0 * m.flow2.x) + textureSample(noise, samp, world * m.flow2.z).g;
+  let flow = textureSample(flowMap, samp, i.uv * m.flow.x).xy * 2.0 - 1.0;
+  let scroll = flow * m.flow2.y;
+  let strength = (dot(flow, flow) + 0.1) * m.flow.z;
+  let base = world * m.flow.y;
+  let f1 = fract(t + 0.5);
+  let a = textureSample(normalMap, samp, base + floor(t + 0.5) * 0.311 + 0.5 + scroll * f1).xy;
+  let f2 = fract(t);
+  let b = textureSample(normalMap, samp, base + floor(t) * 0.311 + scroll * f2).xy;
+  let n = (mix(b, a, abs(f2 * 2.0 - 1.0)) * 2.0 - 1.0) * strength;
+  return vec3f(n, sqrt(max(1.0 - dot(n, n), 0.0)));
+}
+fn toLinear(c: vec3f) -> vec3f { return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045)); }
+fn fromLinear(c: vec3f) -> vec3f { let x = clamp(c, vec3f(0), vec3f(1)); return select(1.055 * pow(x, vec3f(1.0 / 2.4)) - 0.055, 12.92 * x, x <= vec3f(0.0031308)); }
+// How far the view ray travels under the surface, at this pixel of the depth buffer
+fn underwater(uv: vec2f, size: vec2f, surface: vec3f) -> f32 {
+  let z = textureLoad(depth, vec2i(clamp(uv, vec2f(0), vec2f(1)) * size), 0);
+  let h = w.inv * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
+  let below = h.xyz / h.w;
+  return select(0.0, length(below - surface), below.z < surface.z);
+}
+// [R refract_ps] the scene through a scrolling normal map and a tint; the offset is in clip space, so it shrinks with distance
+fn refractShader(i: O) -> vec4f {
+  let n = textureSample(normalMap, samp, i.uv + m.flow2.xy * w.time.x).xy * 2.0 - 1.0;
+  let tint = textureSample(noise, samp, i.uv).rgb * m.tint.rgb;
+  let uv = i.p.xy / vec2f(textureDimensions(scene)) + n * m.tint.w / max(i.cw, 1.0) * vec2f(0.5, -0.5);
+  return vec4f(fromLinear(toLinear(textureSampleLevel(scene, edge, uv, 0.0).rgb) * tint), 1.0);
+}
+@fragment fn fs(i: O) -> @location(0) vec4f {
+  let N = surfaceNormal(i);
+  if (m.range.w > 0.0) { return refractShader(i); }
+  let toEye = cam.eye.xyz - i.w;
+  let E = normalize(toEye);
+  let ne = dot(N, E);
+  let x = exp(saturate(ne) * -9.28) + 0.0425;
+  let fresnel = (1.04 - 1.04 * x) * 0.05 + (1.04 * x - 0.04);
+  let reflected = textureSample(envmap, samp, 2.0 * ne * N - dot(N, N) * E).rgb * m.tint.rgb;
+  let size = vec2f(textureDimensions(scene));
+  let uv0 = i.p.xy / size;
+  // The fog factor kept in the refraction target's alpha fades the distortion out at the shore
+  let fogAt = fn_fog(underwater(uv0, size, i.w));
+  let uv1 = uv0 + vec2f(dot(w.right.xyz, N), -dot(w.up.xyz, N)) * m.tint.w * select(1.0, fogAt, m.fog.w > 0.0);
+  // Refraction can't pick up what's above the surface: fall back to the straight-through pixel
+  let d1 = underwater(uv1, size, i.w);
+  let uv = select(uv0, uv1, d1 > 0.0);
+  var refr = toLinear(textureSampleLevel(scene, edge, uv, 0.0).rgb);
+  if (m.fog.w > 0.0) {
+    var fog = m.fog.rgb;
+    if (m.range.z > 0.0) { fog *= 2.0 * textureSampleLevel(lm, edge, i.luv, 0.0).rgb; }
+    refr = mix(refr, fog * cam.fog.w, fn_fog(underwater(uv, size, i.w)));
+  }
+  return vec4f(fromLinear(refr + fresnel * reflected * cam.fog.w), 1.0);
+}
+fn fn_fog(d: f32) -> f32 { return saturate((d - m.range.x) / max(m.range.y - m.range.x, 0.001)); }`;
+// VertexLitGeneric and its phong path, shared by props and characters. Ported from phong_ps30.
+const MODEL_COMMON = /* wgsl */`
+struct Cam { vp: mat4x4f, eye: vec4f, sun: vec4f, fog: vec4f, csm: array<mat4x4f, 3>, csmColor: vec4f, csmParam: vec4f };
+@group(0) @binding(0) var<uniform> cam: Cam;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var csmTex: texture_depth_2d;
+@group(0) @binding(3) var csmSamp: sampler_comparison;
+// [R lightmappedgeneric_ps30] nine taps: corners 1/16, edges 1/8, center 1/4
+fn csmPcf(uv: vec2f, z: f32) -> f32 {
+  let t = vec2f(1.0 / 3072.0, 1.0 / 1024.0);
+  var s = textureSampleCompareLevel(csmTex, csmSamp, uv, z) * 0.25;
+  for (var i = 0; i < 4; i++) {
+    let a = vec2f(select(-1.0, 1.0, (i & 1) == 0), select(-1.0, 1.0, (i & 2) == 0));
+    s += textureSampleCompareLevel(csmTex, csmSamp, uv + a * t, z) * 0.0625;
+    s += textureSampleCompareLevel(csmTex, csmSamp, uv + select(vec2f(0, a.y), vec2f(a.x, 0), (i & 1) == 0) * t, z) * 0.125;
+  }
+  return s;
+}
+fn csmCascade(i: i32, c: vec4f) -> f32 { return csmPcf(vec2f((c.x * 0.5 + 0.5 + f32(i)) / 3.0, 0.5 - c.y * 0.5), c.z - 0.00015); }
+// 1 lit, 0 shadowed; the first cascade holding the point, blended into the next near its edge, fading out with distance
+fn csmShadow(w: vec3f) -> f32 {
+  if (cam.csmColor.w == 0.0) { return 1.0; }
+  var s = 1.0;
+  let c0 = cam.csm[0] * vec4f(w, 1); let c1 = cam.csm[1] * vec4f(w, 1); let c2 = cam.csm[2] * vec4f(w, 1);
+  let e0 = max(abs(c0.x), abs(c0.y)); let e1 = max(abs(c1.x), abs(c1.y)); let e2 = max(abs(c2.x), abs(c2.y));
+  if (e0 < 0.98) { s = csmCascade(0, c0); if (e0 > 0.8) { s = mix(s, csmCascade(1, c1), (e0 - 0.8) / 0.18); } }
+  else if (e1 < 0.98) { s = csmCascade(1, c1); if (e1 > 0.8) { s = mix(s, csmCascade(2, c2), (e1 - 0.8) / 0.18); } }
+  else if (e2 < 0.98) { s = csmCascade(2, c2); }
+  let d = w - cam.eye.xyz;
+  return mix(s, 1.0, saturate(dot(d, d) * cam.csmParam.x + cam.csmParam.y));
+}
 // tint: $color2. fres: fresnel ranges, boost. env: tint, mask from the normal map's alpha. spec: tint (x < 0 uses albedo), rim exponent.
 // ctl: mask from base alpha, mask from luminance, exponent override, invert mask. rim: phong, rimlight, rim boost, rim mask.
 // has: diffuse warp, specular warp, envmap, albedo tint. misc: selfillum, unlit.
-struct M { tint: vec4f, fres: vec4f, env: vec4f, spec: vec4f, ctl: vec4f, rim: vec4f, has: vec4f, misc: vec4f };
+// misc also: non-phong mask (1 normal alpha, 2 inverted base alpha), contrast. ext: saturation.
+struct M { tint: vec4f, fres: vec4f, env: vec4f, spec: vec4f, ctl: vec4f, rim: vec4f, has: vec4f, misc: vec4f, ext: vec4f };
 @group(1) @binding(0) var t0: texture_2d<f32>;
 @group(1) @binding(1) var specWarp: texture_2d<f32>;
 @group(1) @binding(2) var diffWarp: texture_2d<f32>;
@@ -115,7 +260,7 @@ const PROP_WGSL = MODEL_COMMON + /* wgsl */`
 override CUT: f32 = -1.0;
 @group(2) @binding(0) var envmap: texture_cube<f32>;
 struct V { @location(0) pos: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f, @location(8) tan: vec4f, @location(3) m0: vec4f, @location(4) m1: vec4f, @location(5) m2: vec4f, @location(9) c0: vec4f, @location(10) c1: vec4f, @location(11) c2: vec4f };
-struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) n: vec3f, @location(2) w: vec3f, @location(3) t: vec4f, @location(4) c0: vec3f, @location(5) c1: vec3f, @location(6) c2: vec3f };
+struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) n: vec3f, @location(2) w: vec3f, @location(3) t: vec4f, @location(4) c0: vec3f, @location(5) c1: vec3f, @location(6) c2: vec3f, @location(7) sun: vec3f };
 @vertex fn vs(v: V) -> O {
   var o: O;
   let w = vec3f(dot(v.m0, vec4f(v.pos, 1)), dot(v.m1, vec4f(v.pos, 1)), dot(v.m2, vec4f(v.pos, 1)));
@@ -124,6 +269,7 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) n: 
   o.t = vec4f(dot(v.m0.xyz, v.tan.xyz), dot(v.m1.xyz, v.tan.xyz), dot(v.m2.xyz, v.tan.xyz), v.tan.w);
   // [R phong_vs30] the baked colors decode as (2c)^2.2
   o.c0 = pow(v.c0.rgb * 2.0, vec3f(2.2)); o.c1 = pow(v.c1.rgb * 2.0, vec3f(2.2)); o.c2 = pow(v.c2.rgb * 2.0, vec3f(2.2));
+  o.sun = vec3f(v.c0.a, v.c1.a, v.c2.a);
   return o;
 }
 // [R phong_ps30, baked vertex lighting] three colors along the bump basis. No world lights reach it, so no phong highlight.
@@ -134,13 +280,25 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f, @location(1) n: 
   let ts = nt.xyz * 2.0 - 1.0;
   var dp = vec3f(saturate(dot(ts, vec3f(0.816496611, 0, 0.577350259))), saturate(dot(ts, vec3f(-0.408248335, 0.707106769, 0.577350259))), saturate(dot(ts, vec3f(-0.408248216, -0.707106829, 0.577350259))));
   dp *= dp;
-  let light = (dp.x * i.c0 + dp.y * i.c1 + dp.z * i.c2) / dot(dp, vec3f(1));
+  let lit = csmShadow(i.w);
+  let light = (dp.x * i.c0 + dp.y * i.c1 + dp.z * i.c2 + dot(dp, i.sun) * cam.csmColor.rgb * lit) / dot(dp, vec3f(1));
   let N = worldNormal(ts, i.n, i.t);
   let view = normalize(cam.eye.xyz - i.w);
-  let ref_ = textureSample(envmap, samp, 2.0 * dot(N, view) * N - view).rgb * m.env.rgb;
-  let specMask = mix(nt.a, c.a, m.ctl.x);
-  var envMask = mix(c.a, specMask, m.env.w);
-  envMask = mix(envMask, 1.0 - envMask, m.ctl.w);
+  var ref_ = textureSample(envmap, samp, 2.0 * dot(N, view) * N - view).rgb;
+  var envMask: f32;
+  if (m.rim.x > 0.0) {
+    // [R phong_ps30]
+    envMask = mix(c.a, mix(nt.a, c.a, m.ctl.x), m.env.w);
+    envMask = mix(envMask, 1.0 - envMask, m.ctl.w);
+    ref_ *= m.env.rgb;
+  } else {
+    // [R vertexlit_and_unlit_generic_bump_ps30] tinted, then contrast and saturation
+    envMask = select(select(1.0, 1.0 - c.a, m.misc.z == 2.0), nt.a, m.misc.z == 1.0);
+    ref_ *= m.env.rgb * envMask;
+    envMask = 1.0;
+    ref_ = mix(ref_, ref_ * ref_, m.misc.w);
+    ref_ = mix(vec3f(dot(ref_, vec3f(0.299, 0.587, 0.114))), ref_, m.ext.x);
+  }
   var diffuse = c.rgb * m.tint.rgb * light;
   if (m.misc.x > 0.0) { diffuse = mix(diffuse, c.rgb, c.a); }
   return finish(diffuse + ref_ * envMask * m.has.z);
@@ -199,10 +357,11 @@ fn ambient(n: vec3f) -> vec3f {
   let refl = 2.0 * NdotV * N - view;
   var diffuse = ambient(N);
   var spec = vec3f(0); var rim = vec3f(0);
+  let sunLit = csmShadow(i.wp);
   for (var k = 0; k < 4; k++) {
     if (f32(k) >= b.count.x) { break; }
     let l = b.lights[k];
-    let col = l.color.rgb * i.atten[k];
+    let col = l.color.rgb * i.atten[k] * select(1.0, sunLit, l.color.w > 0.0);
     let L = normalize(l.pos.xyz - i.wp);
     let ndl = saturate(dot(N, L));
     let wrap = (ndl * ndl + ndl) * 0.5;
@@ -367,6 +526,7 @@ function rgb9e5(r, g, b) {
   return (c(r) | (c(g) << 9) | (c(b) << 18) | (e << 27)) >>> 0;
 }
 const WORLD_STRIDE = 18;
+const CSM_DIST = 400; // [R client.dll 18010ab9b] no controller asking otherwise
 const LIGHT_DATA = 128 * 12 + 4 + 24; // where the light block starts in a character's uniform data
 const on = (v) => v !== undefined && v !== '' && v !== '0';
 const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -393,11 +553,13 @@ export class Renderer {
   constructor(canvas, device, format, fetchGame) {
     Object.assign(this, { canvas, device, format, fetchGame });
     this.ctx = canvas.getContext('webgpu');
-    this.ctx.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    this.ctx.configure({ device, format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING });
+    this.exposure = new Exposure();
+    this.lastFrameT = 0;
     this.bc = device.features.has('texture-compression-bc');
     this.texCache = new Map();
     this.vmtCache = new Map();
-    this.camBuf = device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.camBuf = device.createBuffer({ size: 336, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.samp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 8 });
     this.lmSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     this.fxSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
@@ -409,6 +571,7 @@ export class Renderer {
     this.meshes = new Map();
     this.propBatches = [];
     this.worldDraws = [];
+    this.waterDraws = [];
     this.lines = [];
     this._pipelines();
     this.resize();
@@ -428,10 +591,15 @@ export class Renderer {
       { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
       { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} }] });
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }] });
     this.g0Obj = d.createBindGroupLayout({ entries: [
       { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} }] });
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } }] });
     this.gWorldMat = d.createBindGroupLayout({ entries: [
       ...[0, 1, 2, 3, 4, 5].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })),
       { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
@@ -452,6 +620,36 @@ export class Renderer {
         { shaderLocation: 4, offset: 32, format: 'float32' }, { shaderLocation: 5, offset: 36, format: 'float32x3' }, { shaderLocation: 6, offset: 48, format: 'float32x3' }, { shaderLocation: 7, offset: 60, format: 'float32x3' }] }] },
       fragment: { module: wm, entryPoint: 'fs', targets: target }, primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: depth,
     });
+    this.g0Water = d.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: {} }] });
+    this.gWaterMat = d.createBindGroupLayout({ entries: [
+      ...[0, 1, 2].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })),
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: {} }] });
+    // The customization screen's backdrop [I]: matched to the reference, the .res only says the panel clears translucent
+    const bd = mod(`
+struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> O { var o: O; let x = f32(i32(i & 1u) * 4 - 1); let y = f32(i32(i >> 1u) * 4 - 1); o.p = vec4f(x, y, 0.999, 1); o.c = vec2f(x, y); return o; }
+@fragment fn fs(i: O) -> @location(0) vec4f {
+  let d = length((i.c - vec2f(-0.35, 0.05)) * vec2f(0.8, 1.05));
+  return vec4f(vec3f(mix(0.9, 0.3, smoothstep(0.0, 1.35, d))), 1);
+}`);
+    this.pBackdrop = d.createRenderPipeline({ layout: 'auto', vertex: { module: bd, entryPoint: 'vs' }, fragment: { module: bd, entryPoint: 'fs', targets: target }, primitive: { topology: 'triangle-list' }, depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' } });
+    const wtr = mod(WATER_WGSL);
+    this.pWater = d.createRenderPipeline({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.g0Water, this.gWaterMat] }),
+      vertex: { module: wtr, entryPoint: 'vs', buffers: [{ arrayStride: WORLD_STRIDE * 4, attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x2' }, { shaderLocation: 2, offset: 20, format: 'float32x2' }] }] },
+      fragment: { module: wtr, entryPoint: 'fs', targets: target }, primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+    });
+    this.waterBuf = d.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const pm = mod(PROP_WGSL);
     [this.pProp, this.pPropCut] = both({
       layout: d.createPipelineLayout({ bindGroupLayouts: [this.g0Obj, this.gModelMat, this.gEnv] }),
@@ -479,7 +677,10 @@ export class Renderer {
     this.triBuf = d.createBuffer({ size: 28 * 3 * 2 * 256, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     const sk = mod(SKY_WGSL);
     this.pSky = d.createRenderPipeline({ layout: 'auto', vertex: { module: sk, entryPoint: 'vs' }, fragment: { module: sk, entryPoint: 'fs', targets: target }, primitive: { topology: 'triangle-list' }, depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' } });
-    this.bg0Obj = d.createBindGroup({ layout: this.g0Obj, entries: [{ binding: 0, resource: { buffer: this.camBuf } }, { binding: 1, resource: this.samp }] });
+    this.csmTex = d.createTexture({ size: [3072, 1024], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    this.csmSamp = d.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
+    this.bg0Obj = d.createBindGroup({ layout: this.g0Obj, entries: [{ binding: 0, resource: { buffer: this.camBuf } }, { binding: 1, resource: this.samp }, { binding: 2, resource: this.csmTex.createView() }, { binding: 3, resource: this.csmSamp }] });
+    this._csmPipelines();
     // charge overlay: same vertices as the skinned pass, blended over it
     this.gCharge = d.createBindGroupLayout({ entries: [0, 1, 2].map((binding) => ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } })) });
     const cm = mod(CHARGE_WGSL);
@@ -510,6 +711,132 @@ export class Renderer {
     this.pFx = d.createRenderPipeline({ ...fxBase, fragment: { module: fm, entryPoint: 'fs', targets: [{ format: this.format, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'zero', dstFactor: 'one' } } }] } });
     this.pFxRefract = d.createRenderPipeline({ ...fxBase, fragment: { module: fm, entryPoint: 'fsRefract', targets: [{ format: this.format }] } });
     this.fxVB = d.createBuffer({ size: 240000 * 44, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    // the exposure histogram's view of the frame: its center region, small, read back now and then
+    const hm = mod(/* wgsl */`
+      @group(0) @binding(0) var t: texture_2d<f32>;
+      @group(0) @binding(1) var s: sampler;
+      struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
+      @vertex fn vs(@builtin(vertex_index) i: u32) -> O { var o: O; let x = f32(i32(i & 1u) * 4 - 1); let y = f32(i32(i >> 1u) * 4 - 1); o.p = vec4f(x, y, 0, 1); o.uv = vec2f(x * 0.5 + 0.5, 0.5 - y * 0.5); return o; }
+      // [R client.dll] mat_exposure_center_region_x, _y
+      @fragment fn fs(i: O) -> @location(0) vec4f { return textureSampleLevel(t, s, (i.uv - 0.5) * vec2f(0.9, 0.85) + 0.5, 0); }`);
+    this.pHist = d.createRenderPipeline({ layout: 'auto', vertex: { module: hm, entryPoint: 'vs' }, fragment: { module: hm, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] }, primitive: { topology: 'triangle-list' } });
+    this.histTex = d.createTexture({ size: [64, 36], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    this.histBuf = d.createBuffer({ size: 256 * 36, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    this.histSamp = d.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+    this.histBusy = false;
+    this.histFrame = 0;
+  }
+
+  // Depth-only draws for the shadow atlas; a material with cutouts samples its base texture
+  _csmPipelines() {
+    const d = this.device;
+    this.gDepth = d.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} }, { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} }] });
+    const head = /* wgsl */`
+      @group(0) @binding(0) var<uniform> vp: mat4x4f;
+      @group(0) @binding(1) var samp: sampler;
+      @group(1) @binding(0) var t0: texture_2d<f32>;
+      @fragment fn cut(@location(0) uv: vec2f) -> @location(0) vec4f { if (textureSample(t0, samp, uv).a < 0.5) { discard; } return vec4f(0); }
+      struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };`;
+    const pipes = (code, layouts, buffers) => {
+      const module = d.createShaderModule({ code: head + code });
+      const base = { layout: d.createPipelineLayout({ bindGroupLayouts: layouts }), vertex: { module, entryPoint: 'vs', buffers }, primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less', depthBiasSlopeScale: 2 } };
+      return [d.createRenderPipeline(base), d.createRenderPipeline({ ...base, fragment: { module, entryPoint: 'cut', targets: [] } })];
+    };
+    [this.pDepthWorld, this.pDepthWorldCut] = pipes(`
+      @vertex fn vs(@location(0) pos: vec3f, @location(1) uv: vec2f) -> O { var o: O; o.p = vp * vec4f(pos, 1); o.uv = uv; return o; }`,
+    [this.gDepth, this.gWorldMat], [{ arrayStride: WORLD_STRIDE * 4, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x2' }] }]);
+    [this.pDepthProp, this.pDepthPropCut] = pipes(`
+      @vertex fn vs(@location(0) pos: vec3f, @location(1) uv: vec2f, @location(3) m0: vec4f, @location(4) m1: vec4f, @location(5) m2: vec4f) -> O {
+        var o: O; let w = vec3f(dot(m0, vec4f(pos, 1)), dot(m1, vec4f(pos, 1)), dot(m2, vec4f(pos, 1))); o.p = vp * vec4f(w, 1); o.uv = uv; return o; }`,
+    [this.gDepth, this.gModelMat], [{ arrayStride: 64, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 24, format: 'float32x2' }] },
+      { arrayStride: 48, stepMode: 'instance', attributes: [{ shaderLocation: 3, offset: 0, format: 'float32x4' }, { shaderLocation: 4, offset: 16, format: 'float32x4' }, { shaderLocation: 5, offset: 32, format: 'float32x4' }] }]);
+    [this.pDepthSkin, this.pDepthSkinCut] = pipes(`
+      struct B { m: array<mat3x4f, 128> };
+      @group(2) @binding(0) var<uniform> b: B;
+      @vertex fn vs(@location(0) pos: vec3f, @location(1) uv: vec2f, @location(3) w: vec3f, @location(4) idx: vec4u) -> O {
+        var o: O; let p4 = vec4f(pos, 1); let wp = (p4 * b.m[idx.x]) * w.x + (p4 * b.m[idx.y]) * w.y + (p4 * b.m[idx.z]) * w.z; o.p = vp * vec4f(wp, 1); o.uv = uv; return o; }`,
+    [this.gDepth, this.gModelMat, this.gBones], [{ arrayStride: 64, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 24, format: 'float32x2' }, { shaderLocation: 3, offset: 32, format: 'float32x3' }, { shaderLocation: 4, offset: 44, format: 'uint8x4' }] }]);
+    this.csmSampler = d.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
+    this.csmCascades = [0, 1, 2].map(() => {
+      const buf = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      return { buf, bg: d.createBindGroup({ layout: this.gDepth, entries: [{ binding: 0, resource: { buffer: buf } }, { binding: 1, resource: this.csmSampler }] }) };
+    });
+  }
+
+  // [R client.dll 180176dc0] Log-spaced splits out to the shadow distance. Each cascade is a sphere around its slice of the view,
+  // snapped to whole texels so edges hold still while the camera moves. Clip space, with z along the sun.
+  _updateCascades(view) {
+    const sun = this.lighting?.sky;
+    if (!sun) return false;
+    const fwd = norm3(sun.n);
+    const right = norm3(cross3(fwd, Math.abs(fwd[2]) > 0.99 ? [1, 0, 0] : [0, 0, 1])), up = cross3(right, fwd);
+    const near = 4, far = CSM_DIST, aspect = this.canvas.width / this.canvas.height;
+    const k = Math.tan(view.fovY / 2), k2 = k * k * (1 + aspect * aspect);
+    let lo = near;
+    this.csmSpheres = [];
+    for (let i = 0; i < 3; i++) {
+      const hi = near * Math.pow(far / near, (i + 1) / 3) + 0.1;
+      const mid = (lo + hi) / 2 * (1 + k2), z = Math.min(hi, mid);
+      const c = [view.eye[0] + view.fwd[0] * z, view.eye[1] + view.fwd[1] * z, view.eye[2] + view.fwd[2] * z];
+      const r = Math.ceil(Math.sqrt((hi - z) ** 2 + hi * hi * k2));
+      const texel = 2 * r / 1024;
+      const cx = Math.round(dot3(c, right) / texel) * texel, cy = Math.round(dot3(c, up) / texel) * texel, cz = dot3(c, fwd);
+      const back = 4000, range = 5000;
+      // column major: x' = (right.p - cx) / r, y' = (up.p - cy) / r, z' = (fwd.p - cz + back) / range
+      const m = new Float32Array([
+        right[0] / r, up[0] / r, fwd[0] / range, 0,
+        right[1] / r, up[1] / r, fwd[1] / range, 0,
+        right[2] / r, up[2] / r, fwd[2] / range, 0,
+        -cx / r, -cy / r, (back - cz) / range, 1]);
+      this.csmSpheres.push({ right, up, cx, cy, r, m });
+      this.device.queue.writeBuffer(this.csmCascades[i].buf, 0, m);
+      lo = hi;
+    }
+    return true;
+  }
+
+  _drawCascades(enc, view) {
+    const pass = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: this.csmTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' } });
+    this.csmSpheres.forEach((s, i) => {
+      pass.setViewport(i * 1024, 0, 1024, 1024, 0, 1);
+      pass.setScissorRect(i * 1024, 0, 1024, 1024);
+      pass.setBindGroup(0, this.csmCascades[i].bg);
+      const visible = (c, rad) => Math.abs(dot3(c, s.right) - s.cx) < s.r + rad && Math.abs(dot3(c, s.up) - s.cy) < s.r + rad;
+      if (this.worldVB) {
+        pass.setVertexBuffer(0, this.worldVB);
+        let piped = null;
+        for (const dr of this.worldDraws) {
+          if (dr.noShadow || !visible(dr.center, dr.radius)) continue;
+          const p = dr.cut ? this.pDepthWorldCut : this.pDepthWorld;
+          if (p !== piped) { pass.setPipeline(p); piped = p; }
+          pass.setBindGroup(1, dr.bg);
+          pass.draw(dr.count, 1, dr.first, 0);
+        }
+      }
+      for (const b of this.propBatches) {
+        pass.setVertexBuffer(0, b.mesh.vb);
+        pass.setVertexBuffer(1, b.inst);
+        pass.setIndexBuffer(b.mesh.ib, 'uint32');
+        for (const sub of b.mesh.subs) {
+          if (sub.noShadow) continue;
+          pass.setPipeline(sub.cut ? this.pDepthPropCut : this.pDepthProp);
+          pass.setBindGroup(1, sub.bg);
+          for (let k = 0; k < b.draws.length; k++) if (visible(b.draws[k].origin, b.mesh.radius)) pass.drawIndexed(sub.count, 1, sub.start, 0, k);
+        }
+      }
+      for (const c of view.characters) {
+        pass.setBindGroup(2, c.bones.bg);
+        pass.setVertexBuffer(0, c.mesh.vb);
+        pass.setIndexBuffer(c.mesh.ib, 'uint32');
+        for (const sub of c.mesh.subs) {
+          if (sub.noShadow) continue;
+          pass.setPipeline(sub.cut ? this.pDepthSkinCut : this.pDepthSkin);
+          pass.setBindGroup(1, sub.bg);
+          pass.drawIndexed(sub.count, 1, sub.start, 0, 0);
+        }
+      }
+    });
+    pass.end();
   }
 
   // Particle and trail materials, read from the game's .vmt
@@ -544,6 +871,7 @@ export class Renderer {
     this.sceneCopy?.destroy();
     this.sceneCopy = this.device.createTexture({ size: [w, h], format: this.format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     this.bgFx0 = null;
+    this.bg0Water = null;
   }
 
   // ---------------------------------------------------------------- materials
@@ -568,6 +896,9 @@ export class Renderer {
       }
       const p = {};
       for (const x of body) if (!Array.isArray(x.value)) p[x.key.toLowerCase()] = x.value;
+      const proxies = body.find((x) => x.key.toLowerCase() === 'proxies')?.value;
+      const scroll = Array.isArray(proxies) ? proxies.find((x) => x.key.toLowerCase() === 'texturescroll')?.value : null;
+      if (Array.isArray(scroll)) p.textureScroll = Object.fromEntries(scroll.map((x) => [x.key.toLowerCase(), x.value]));
       return { shader, p };
     })();
     this.vmtCache.set(key, pr);
@@ -690,6 +1021,7 @@ export class Renderer {
       const r = [cx, cy]; cx += w + 1; rowH = Math.max(rowH, h); return r;
     };
     const atlas = new Uint32Array(size * size);
+    const sunAtlas = new Uint8Array(size * size);
     const bdv = bsp.dv, lightOff = bsp.light.off, lightLen = bsp.light.len;
     const placeFace = (f) => {
       if (f.lightofs < 0 || !lightLen) return null;
@@ -701,7 +1033,11 @@ export class Renderer {
           for (let x = 0; x < w; x++) {
             const o = lightOff + f.lightofs + (s * w * h + y * w + x) * 4;
             const e = 2 ** bdv.getInt8(o + 3) / 255;
-            atlas[(at[1] + y) * size + at[0] + s * (w + 1) + x] = rgb9e5(bdv.getUint8(o) * e, bdv.getUint8(o + 1) * e, bdv.getUint8(o + 2) * e);
+            const texel = (at[1] + y) * size + at[0] + s * (w + 1) + x;
+            atlas[texel] = rgb9e5(bdv.getUint8(o) * e, bdv.getUint8(o + 1) * e, bdv.getUint8(o + 2) * e);
+            // one more layer follows the pages: a byte per page, the sun's share of it in units of the sky light's color
+            const sun = lightOff + f.lightofs + (n * w * h + y * w + x) * 4 + s;
+            if (sun < lightOff + lightLen) sunAtlas[texel] = bdv.getUint8(sun);
           }
         }
       }
@@ -756,8 +1092,11 @@ export class Renderer {
     });
     const lmTex = d.createTexture({ size: [size, size], format: 'rgb9e5ufloat', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     d.queue.writeTexture({ texture: lmTex }, atlas, { bytesPerRow: size * 4 }, [size, size]);
+    const lmSunTex = d.createTexture({ size: [size, size], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    d.queue.writeTexture({ texture: lmSunTex }, sunAtlas, { bytesPerRow: size }, [size, size]);
+    this.lmView = lmTex.createView();
     this.bg0World = d.createBindGroup({ layout: this.g0World, entries: [
-      { binding: 0, resource: { buffer: this.camBuf } }, { binding: 1, resource: this.samp }, { binding: 2, resource: lmTex.createView() }, { binding: 3, resource: this.lmSamp }] });
+      { binding: 0, resource: { buffer: this.camBuf } }, { binding: 1, resource: this.samp }, { binding: 2, resource: lmTex.createView() }, { binding: 3, resource: this.lmSamp }, { binding: 4, resource: this.csmTex.createView() }, { binding: 5, resource: this.csmSamp }, { binding: 6, resource: lmSunTex.createView() }] });
     // merged vertex buffer
     const names = [...perTex.keys()];
     let total = 0;
@@ -768,7 +1107,10 @@ export class Renderer {
     for (const n of names) {
       const arr = perTex.get(n);
       all.set(arr, at);
-      draws.push({ name: n, first: at / WORLD_STRIDE, count: arr.length / WORLD_STRIDE });
+      const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < arr.length; i += WORLD_STRIDE) for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], arr[i + k]); mx[k] = Math.max(mx[k], arr[i + k]); }
+      const center = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+      draws.push({ name: n, first: at / WORLD_STRIDE, count: arr.length / WORLD_STRIDE, center, radius: Math.hypot(mx[0] - center[0], mx[1] - center[1], mx[2] - center[2]) });
       at += arr.length;
     }
     this.worldVB = d.createBuffer({ size: all.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -789,8 +1131,42 @@ export class Renderer {
       // An unpatched env_cubemap means the engine's choice at draw time; the map's default stands in. [I]
       const envName = on(p.$envmap) ? (/^env_cubemap$/i.test(p.$envmap) ? defaultCube : p.$envmap) : null;
       const envT = envName ? await this._cube(envName, pak) : null;
+      if (/^water/.test(m?.shader ?? '')) {
+        // The underside only draws from below the surface, where a duel never puts the camera
+        dr.water = true;
+        dr.ok = !!n0;
+        dr.hidden = p.$abovewater === '0';
+        const flowT = on(p.$flowmap) ? await this._tex(p.$flowmap, pak, true) : null, noiseT = on(p.$flow_noise_texture) ? await this._tex(p.$flow_noise_texture, pak, true) : null;
+        const num = (k, def) => { const v = parseFloat(p[k]); return Number.isNaN(v) ? def : v; };
+        const color = (k, def) => vmtColor(p[k], def).map(gammaToLinear);
+        const u = d.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        d.queue.writeBuffer(u, 0, new Float32Array([
+          1 / num('$flow_worlduvscale', 1), 1 / num('$flow_normaluvscale', 1), num('$flow_bumpstrength', 1), flowT ? 1 : 0,
+          num('$flow_timeintervalinseconds', 0.4), num('$flow_uvscrolldistance', 0.2), num('$flow_noise_scale', 0.0002), num('$flow_timescale', 1),
+          ...color('$reflecttint', [1, 1, 1]), num('$refractamount', 0),
+          ...color('$fogcolor', [0, 0, 0]), on(p.$fogenable) ? 1 : 0,
+          num('$fogstart', 0), num('$fogend', 1), on(p.$lightmapwaterfog) ? 1 : 0, 0]));
+        dr.bg = d.createBindGroup({ layout: this.gWaterMat, entries: [n0 || this.flatNormal, flowT || this.flatNormal, noiseT || this.white].map((t, binding) => ({ binding, resource: t.createView() })).concat(
+          { binding: 3, resource: (envT || (defaultCube && await this._cube(defaultCube, pak)) || this.blackCube).createView({ dimension: 'cube' }) }, { binding: 4, resource: { buffer: u } }) });
+        onProgress(`textures ${++done}/${draws.length}`);
+        return;
+      }
+      if (/^refract/.test(m?.shader ?? '') && n0) {
+        dr.water = true;
+        dr.ok = true;
+        const tintT = on(p.$refracttinttexture) ? await this._tex(p.$refracttinttexture, pak) : null;
+        const sc = p.textureScroll, rate = parseFloat(sc?.texturescrollrate ?? 0), ang = parseFloat(sc?.texturescrollangle ?? 0) * Math.PI / 180;
+        const u = d.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const fv = (k, def) => { const v = parseFloat(p[k]); return Number.isNaN(v) ? def : v; };
+        d.queue.writeBuffer(u, 0, new Float32Array([0, 0, 0, 0, Math.cos(ang) * rate, Math.sin(ang) * rate, 0, 0, ...vmtColor(p.$refracttint, [1, 1, 1]), fv('$refractamount', 0.5), 0, 0, 0, 0, 0, 0, 0, 1]));
+        dr.bg = d.createBindGroup({ layout: this.gWaterMat, entries: [n0, this.flatNormal, tintT || this.white].map((t, binding) => ({ binding, resource: t.createView() })).concat(
+          { binding: 3, resource: this.blackCube.createView({ dimension: 'cube' }) }, { binding: 4, resource: { buffer: u } }) });
+        onProgress(`textures ${++done}/${draws.length}`);
+        return;
+      }
       dr.ok = !!b0;
       dr.cut = Renderer.cutout(m) || transNames.has(dr.name);
+      dr.noShadow = /^(water|refract|lightmappedreflective|unlit)/.test(m?.shader ?? '') || on(p.$translucent) || on(p.$additive) || on(p.$nodraw);
       const t0 = b0 || this.fallback;
       const u = d.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       const f = (k, def) => { const v = parseFloat(p[k]); return Number.isNaN(v) ? def : v; };
@@ -809,7 +1185,10 @@ export class Renderer {
     }));
     await this._loadSky(bsp, pak);
     await this._loadLighting(bsp, pak);
-    this.worldDraws = draws;
+    const ents = new TextDecoder('latin1').decode(bsp.bytes.subarray(bsp.lump(0).off, bsp.lump(0).off + bsp.lump(0).len));
+    this.exposure.configure(tonemapSettings(ents, bsp.entities.filter((e) => e.classname === 'env_tonemap_controller').map((e) => e.targetname)));
+    this.worldDraws = draws.filter((x) => !x.water);
+    this.waterDraws = draws.filter((x) => x.water && !x.hidden);
     this.stats = { textures: draws.length, missing: draws.filter((x) => !x.ok).map((x) => x.name), verts: this.worldVerts, lmSize: size, lmHeight: cy + rowH };
     // sun from light_environment
     const env = bsp.entities.find((e) => e.classname === 'light_environment');
@@ -822,15 +1201,16 @@ export class Renderer {
     await this._loadProps(bsp, onProgress);
   }
 
-  async _meshFor(path, pak) {
-    const key = path.toLowerCase();
+  async _meshFor(path, pak, skin = 0, { body = null, material = null } = {}) {
+    const key = `${path.toLowerCase()}#${skin}#${body ? [...body].sort() : ''}#${material ?? ''}`;
     if (this.meshes.has(key)) return this.meshes.get(key);
     const pr = (async () => {
       const base = path.replace(/\.mdl$/i, '');
       const [m, vvd, vtx] = await Promise.all([this.fetchGame(base + '.mdl', pak), this.fetchGame(base + '.vvd', pak), this.fetchGame(base + '.dx90.vtx', pak)]);
       if (!m || !vvd || !vtx) return null;
       const model = new Model(m, path);
-      const mesh = buildMesh(model, vvd, vtx);
+      const mesh = buildMesh(model, vvd, vtx, skin, body);
+      const replaced = material?.replace(/\\+/g, '/').replace(/^materials\//i, '').replace(/\.vmt$/i, '');
       const nv = mesh.positions.length / 3;
       if (!nv) return null;
       // static layout: pos,n,uv / skinned layout: pos,n,uv,w,idx
@@ -853,8 +1233,8 @@ export class Renderer {
       let chargeParams = null;
       for (const s of mesh.meshes) {
         let tex = null, cut = false, chargeBg = null, vmat = null;
-        for (const dir of model.cdtextures) {
-          const nm = (dir + s.material).replace(/\\/g, '/');
+        for (const dir of replaced ? [''] : model.cdtextures) {
+          const nm = replaced ?? (dir + s.material).replace(/\\/g, '/');
           const vm = await this._vmt(nm, pak);
           if (vm) {
             tex = vm.p.$basetexture ? await this._tex(vm.p.$basetexture, pak) : await this._tex(nm, pak);
@@ -871,9 +1251,11 @@ export class Renderer {
           }
         }
         const t = tex || this.fallback;
-        subs.push({ start: s.start, count: s.count, bg: await this._modelMaterial(t, vmat, pak), ok: !!tex, material: s.material, cut, chargeBg });
+        subs.push({ start: s.start, count: s.count, bg: await this._modelMaterial(t, vmat, pak), ok: !!tex, material: s.material, cut, chargeBg, noShadow: /^(refract|unlit)/.test(vmat?.shader ?? '') || on(vmat?.p?.$additive), hidden: on(vmat?.p?.$additive) });
       }
-      return { vb, ib, subs, model, chargeParams, nv, vhvMesh: mesh.vhvMesh, vhvVert: mesh.vhvVert };
+      let radius = 0;
+      for (let i = 0; i < nv * 3; i += 3) radius = Math.max(radius, Math.hypot(mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]));
+      return { vb, ib, subs, model, chargeParams, nv, radius, vhvMesh: mesh.vhvMesh, vhvVert: mesh.vhvVert };
     })().catch((e) => { console.warn('mesh', path, e.message); return null; });
     this.meshes.set(key, pr);
     return pr;
@@ -883,18 +1265,19 @@ export class Renderer {
     const { names, props } = bsp.staticProps();
     if (!props?.length) return;
     const by = new Map();
-    props.forEach((p, index) => { let l = by.get(p.model); if (!l) by.set(p.model, (l = [])); l.push({ ...p, index }); });
+    props.forEach((p, index) => { const k = `${p.model}:${p.skin}`; let l = by.get(k); if (!l) by.set(k, (l = [])); l.push({ ...p, index }); });
     let done = 0;
     const entries = [...by.entries()];
-    await Promise.all(entries.map(async ([mi, list]) => {
-      const mesh = await this._meshFor(names[mi], bsp);
+    await Promise.all(entries.map(async ([, list]) => {
+      const mi = list[0].model;
+      const mesh = await this._meshFor(names[mi], bsp, list[0].skin);
       onProgress(`props ${++done}/${entries.length}`);
       if (!mesh) return;
       const inst = new Float32Array(list.length * 12);
       list.forEach((p, i) => inst.set(propMatrix(p.origin, p.angles), i * 12));
       const ib = this.device.createBuffer({ size: inst.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
       this.device.queue.writeBuffer(ib, 0, inst);
-      const draws = await Promise.all(list.map(async (p) => ({ colors: await this._propColors(mesh, p, bsp), env: this._envAt(p.origin) })));
+      const draws = await Promise.all(list.map(async (p) => ({ colors: await this._propColors(mesh, p, bsp), env: this._envAt(p.origin), origin: p.origin })));
       this.propBatches.push({ mesh, inst: ib, count: list.length, name: names[mi], first: list[0], draws });
     }));
   }
@@ -908,7 +1291,7 @@ export class Renderer {
     const [specWarp, diffWarp, normal, exp] = await Promise.all([tex(p.$phongwarptexture), tex(p.$lightwarptexture), tex(p.$bumpmap ?? p.$normalmap, true), tex(p.$phongexponenttexture, true)]);
     const ranges = vmtColor(p.$phongfresnelranges, [0, 0.5, 1]), tint = vmtColor(p.$color2 ?? p.$color, [1, 1, 1]).map(gammaToLinear), envTint = vmtColor(p.$envmaptint, [1, 1, 1]).map(gammaToLinear);
     const phongTint = p.$phongtint !== undefined ? vmtColor(p.$phongtint, [1, 1, 1]) : [-1, -1, -1];
-    const u = d.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const u = d.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     d.queue.writeBuffer(u, 0, new Float32Array([
       ...tint, 1,
       ...ranges, f('$phongboost', 1),
@@ -917,7 +1300,8 @@ export class Renderer {
       on(p.$basemapalphaphongmask) ? 1 : 0, on(p.$basemapluminancephongmask) ? 1 : 0, exp ? 0 : f('$phongexponent', 5), on(p.$invertphongmask) ? 1 : 0,
       phong ? 1 : 0, on(p.$rimlight) ? 1 : 0, f('$rimlightboost', 1), on(p.$rimmask) ? 1 : 0,
       diffWarp ? 1 : 0, specWarp ? 1 : 0, envName ? 1 : 0, on(p.$phongalbedotint) ? 1 : 0,
-      on(p.$selfillum) ? 1 : 0, /^unlit/.test(vm?.shader ?? '') ? 1 : 0, 0, 0]));
+      on(p.$selfillum) ? 1 : 0, /^unlit/.test(vm?.shader ?? '') ? 1 : 0, on(p.$normalmapalphaenvmapmask) ? 1 : on(p.$basealphaenvmapmask) ? 2 : 0, f('$envmapcontrast', 0),
+      f('$envmapsaturation', 1), 0, 0, 0]));
     return d.createBindGroup({ layout: this.gModelMat, entries: [base, specWarp || this.white, diffWarp || this.white, normal || this.flatNormal, exp || this.noExp].map((t, binding) => ({ binding, resource: t.createView() })).concat({ binding: 5, resource: { buffer: u } }) });
   }
 
@@ -981,6 +1365,60 @@ export class Renderer {
     b.data[base + 104] = lights.length;
   }
 
+  // [customization.res] the render panel's view_ambient and two directional lights, and its cubemap
+  async loadMenuEnv() {
+    if (this.menuEnv) return;
+    const t = await this._cube('engine/hdr_cubemap', null).catch(() => null);
+    this.menuEnv = t ? this.device.createBindGroup({ layout: this.gEnv, entries: [{ binding: 0, resource: t.createView({ dimension: 'cube' }) }] }) : this.bgBlackEnv;
+  }
+
+  menuLights(b) {
+    const base = LIGHT_DATA;
+    for (let f = 0; f < 6; f++) b.data.set([0.1, 0.1, 0.1, 0], base + f * 4);
+    [[[1, 1, 0.4], [0.7, 0.7, 1.3]], [[-1, -0.5, -1], [0.5, 0.25, 0]]].forEach(([dir, col], i) => {
+      const n = norm3(dir);
+      b.data.set([...col, 0, ...n, 0, -n[0] * 1e6, -n[1] * 1e6, -n[2] * 1e6, 0, 0, 0, 0, 1, 1, 0, 0, 0], base + 24 + i * 20);
+    });
+    b.data[base + 104] = 2;
+    b.env = this.menuEnv ?? this.bgBlackEnv;
+  }
+
+  // A sword or scabbard: no animation of its own, it follows the fighter's bones of the same names
+  loadAttachment(path, skin, material = null) { return this._meshFor(path, null, skin, { material }).catch(() => null); }
+  // The fighter's own model with a skin family and body groups chosen
+  loadBody(path, skin, body) { return this._meshFor(path, null, skin, { body }).catch(() => null); }
+
+  attachTo(fc, part, char) {
+    const { model } = part.mesh, out = new Array(model.bones.length), data = part.bones.data;
+    let matched = false;
+    let rigid = null;
+    model.bones.forEach((b, i) => {
+      const hit = char.root.boneByName.get(b.name.toLowerCase());
+      if (hit !== undefined && !rigid) { rigid = matMul(fc.world[hit], b.poseToBone); matched = true; }
+    });
+    // A cape hangs from the fighter's attachment of the same name [client.dll 180383a49], which sits off the bone
+    const own = model.attachments.find((a) => /^anim_/.test(a.name)), theirs = own && char.root.attachments.find((a) => a.name === own.name);
+    const anchor = theirs && own.bone === 0 ? matMul(matMul(fc.world[theirs.bone], theirs.local), rigidInverse(own.local)) : null;
+    part.jiggle ??= new JiggleBones(jiggleInfo(model));
+    const now = performance.now() / 1000;
+    model.bones.forEach((b, i) => {
+      const hit = char.root.boneByName.get(b.name.toLowerCase());
+      if (i === 0 && anchor) out[i] = anchor;
+      else if (hit !== undefined) out[i] = fc.world[hit];
+      else if (b.parent >= 0) {
+        const goal = matMul(out[b.parent], quatMatrix(b.quat, b.pos));
+        out[i] = part.jiggle.info.has(i) ? part.jiggle.update(i, now, goal) : goal;
+      }
+      if (i >= 128) return;
+      // a root the fighter doesn't have stays rigid with the bones it does, as in the model's own pose
+      if (out[i]) data.set(matMul(out[i], b.poseToBone), i * 12); else if (rigid) data.set(rigid, i * 12);
+    });
+    part.shown = matched;
+    // lit where its fighter stands
+    data.set(fc.bones.data.subarray(LIGHT_DATA), LIGHT_DATA);
+    part.bones.env = fc.bones.env;
+  }
+
   // Skinned character instance
   async loadCharacter(key, mdlPath, char) {
     const mesh = await this._meshFor(mdlPath, null);
@@ -998,16 +1436,30 @@ export class Renderer {
   frame(view) {
     this.resize();
     const d = this.device;
-    const cam = new Float32Array(28);
-    cam.set(view.vp, 0); cam.set([...view.eye, 1], 16); cam.set([...(this.sun || [0.3, 0.3, 0.9]), 1], 20); cam.set([0, 0, 0, view.exposure ?? 1.4], 24);
+    const now = performance.now() / 1000;
+    if (!view.preview) this.exposure.step(this.lastFrameT ? Math.min(0.1, now - this.lastFrameT) : 0);
+    this.lastFrameT = now;
+    const cam = new Float32Array(84);
+    cam.set(view.vp, 0); cam.set([...view.eye, 1], 16); cam.set([...(this.sun || [0.3, 0.3, 0.9]), 1], 20); cam.set([0, 0, 0, this.exposure.scale], 24);
+    if (view.preview) cam[27] = 1; // no auto exposure on the menu
+    const csmOn = !view.preview && !this.noCSM && this._updateCascades(view);
+    if (csmOn) {
+      this.csmSpheres.forEach((s, i) => cam.set(s.m, 28 + i * 16));
+      cam.set([...this.lighting.sky.color, 1], 76);
+      // fades out over the last tenth of the distance [I]
+      const a = (CSM_DIST * 0.9) ** 2, b = CSM_DIST ** 2;
+      cam.set([1 / (b - a), -a / (b - a), 0, 0], 80);
+    }
     d.queue.writeBuffer(this.camBuf, 0, cam);
     const enc = d.createCommandEncoder();
+    if (csmOn) this._drawCascades(enc, view);
     const colorTex = this.ctx.getCurrentTexture();
     const pass = enc.beginRenderPass({
       colorAttachments: [{ view: colorTex.createView(), clearValue: { r: 0.5, g: 0.6, b: 0.75, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
       depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
-    if (this.bg0World && !this.hideWorld) {
+    if (view.preview) { pass.setPipeline(this.pBackdrop); pass.draw(3); }
+    if (this.bg0World && !this.hideWorld && !view.preview) {
       pass.setPipeline(this.pWorld);
       pass.setBindGroup(0, this.bg0World);
       pass.setVertexBuffer(0, this.worldVB);
@@ -1015,11 +1467,12 @@ export class Renderer {
     }
     pass.setPipeline(this.pProp);
     pass.setBindGroup(0, this.bg0Obj);
-    for (const b of this.hideProps ? [] : (this.onlyProp !== undefined ? this.propBatches.filter((x, i) => i === this.onlyProp) : this.propBatches)) {
+    for (const b of this.hideProps || view.preview ? [] : (this.onlyProp !== undefined ? this.propBatches.filter((x, i) => i === this.onlyProp) : this.propBatches)) {
       pass.setVertexBuffer(0, b.mesh.vb);
       pass.setVertexBuffer(1, b.inst);
       pass.setIndexBuffer(b.mesh.ib, 'uint32');
       for (const s of b.mesh.subs) {
+        if (s.hidden) continue;
         pass.setPipeline(s.cut ? this.pPropCut : this.pProp);
         pass.setBindGroup(1, s.bg);
         for (let i = 0; i < b.draws.length; i++) {
@@ -1037,13 +1490,13 @@ export class Renderer {
       pass.setBindGroup(3, c.bones.env ?? this.bgBlackEnv);
       pass.setVertexBuffer(0, c.mesh.vb);
       pass.setIndexBuffer(c.mesh.ib, 'uint32');
-      for (const s of c.mesh.subs) { pass.setPipeline(s.cut ? this.pSkinCut : this.pSkin); pass.setBindGroup(1, s.bg); pass.drawIndexed(s.count, 1, s.start, 0, 0); }
+      for (const s of c.mesh.subs) { if (s.hidden) continue; pass.setPipeline(s.cut ? this.pSkinCut : this.pSkin); pass.setBindGroup(1, s.bg); pass.drawIndexed(s.count, 1, s.start, 0, 0); }
       if (c.charge > 0.001) {
         pass.setPipeline(this.pCharge);
         for (const s of c.mesh.subs) if (s.chargeBg) { pass.setBindGroup(1, s.chargeBg); pass.drawIndexed(s.count, 1, s.start, 0, 0); }
       }
     }
-    if (this.bgSky) {
+    if (this.bgSky && !view.preview) {
       d.queue.writeBuffer(this.skyInv, 0, invert4(view.vp));
       pass.setPipeline(this.pSky);
       pass.setBindGroup(0, this.bgSky);
@@ -1058,6 +1511,23 @@ export class Renderer {
       pass.draw(Math.min(arr.length / 7, this.triBuf.size / 28));
     }
     pass.end();
+    if (this.waterDraws.length && !this.hideWorld && !view.preview) {
+      enc.copyTextureToTexture({ texture: colorTex }, { texture: this.sceneCopy }, [this.canvas.width, this.canvas.height]);
+      const right = norm3(cross3(view.fwd, [0, 0, 1])), up = cross3(right, view.fwd);
+      d.queue.writeBuffer(this.waterBuf, 0, new Float32Array([...invert4(view.vp), ...right, 0, ...up, 0, performance.now() / 1000, 0, 0, 0]));
+      this.bg0Water ??= d.createBindGroup({ layout: this.g0Water, entries: [
+        { binding: 0, resource: { buffer: this.camBuf } }, { binding: 1, resource: this.samp }, { binding: 2, resource: this.lmView }, { binding: 3, resource: this.lmSamp },
+        { binding: 4, resource: this.sceneCopy.createView() }, { binding: 5, resource: this.depth.createView() }, { binding: 6, resource: { buffer: this.waterBuf } }] });
+      const wp = enc.beginRenderPass({
+        colorAttachments: [{ view: colorTex.createView(), loadOp: 'load', storeOp: 'store' }],
+        depthStencilAttachment: { view: this.depth.createView(), depthReadOnly: true },
+      });
+      wp.setPipeline(this.pWater);
+      wp.setBindGroup(0, this.bg0Water);
+      wp.setVertexBuffer(0, this.worldVB);
+      for (const dr of this.waterDraws) { wp.setBindGroup(1, dr.bg); wp.draw(dr.count, 1, dr.first, 0); }
+      wp.end();
+    }
     const fx = view.fx;
     if (fx?.count) {
       d.queue.writeBuffer(this.fxVB, 0, fx.verts, 0, fx.count);
@@ -1072,8 +1542,33 @@ export class Renderer {
       for (const x of fx.draws) { p2.setPipeline(x.mat.refract ? this.pFxRefract : this.pFx); p2.setBindGroup(1, x.mat.bg); p2.draw(x.count, 1, x.first, 0); }
       p2.end();
     }
+    const readHist = !view.preview && !this.histBusy && ++this.histFrame % 6 === 0;
+    if (readHist) {
+      const hp = enc.beginRenderPass({ colorAttachments: [{ view: this.histTex.createView(), loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
+      hp.setPipeline(this.pHist);
+      hp.setBindGroup(0, d.createBindGroup({ layout: this.pHist.getBindGroupLayout(0), entries: [{ binding: 0, resource: colorTex.createView() }, { binding: 1, resource: this.histSamp }] }));
+      hp.draw(3);
+      hp.end();
+      enc.copyTextureToBuffer({ texture: this.histTex }, { buffer: this.histBuf, bytesPerRow: 256 }, [64, 36]);
+    }
     d.queue.submit([enc.finish()]);
+    if (readHist) {
+      this.histBusy = true;
+      this.histBuf.mapAsync(GPUMapMode.READ).then(() => {
+        const px = new Uint8Array(this.histBuf.getMappedRange());
+        const lums = new Float32Array(64 * 36);
+        for (let i = 0; i < lums.length; i++) lums[i] = 0.2125 * SRGB_LINEAR[px[i * 4]] + 0.7154 * SRGB_LINEAR[px[i * 4 + 1]] + 0.0721 * SRGB_LINEAR[px[i * 4 + 2]];
+        this.histBuf.unmap();
+        this.exposure.measure(lums);
+        this.histBusy = false;
+      }).catch(() => { this.histBusy = false; });
+    }
   }
+}
+const SRGB_LINEAR = Float32Array.from({ length: 256 }, (_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+
+function rigidInverse(m) {
+  return [m[0], m[4], m[8], -(m[0] * m[3] + m[4] * m[7] + m[8] * m[11]), m[1], m[5], m[9], -(m[1] * m[3] + m[5] * m[7] + m[9] * m[11]), m[2], m[6], m[10], -(m[2] * m[3] + m[6] * m[7] + m[10] * m[11])];
 }
 
 function invert4(m) {
@@ -1088,9 +1583,4 @@ function invert4(m) {
   return r;
 }
 
-function propMatrix(o, a) {
-  const D = Math.PI / 180;
-  const sy = Math.sin(a[1] * D), cy = Math.cos(a[1] * D), sp = Math.sin(a[0] * D), cp = Math.cos(a[0] * D), sr = Math.sin(a[2] * D), cr = Math.cos(a[2] * D);
-  return [cp * cy, sp * sr * cy - cr * sy, sp * cr * cy + sr * sy, o[0], cp * sy, sp * sr * sy + cr * cy, sp * cr * sy - sr * cy, o[1], -sp, sr * cp, cr * cp, o[2]];
-}
 void matMul; void quatMatrix;

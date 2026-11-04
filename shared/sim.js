@@ -19,9 +19,10 @@ function jumpGravityEase(n, bias, sharpness) {
   const gain = x < 0.5 ? 0.5 * b(2 * x) : 1 - 0.5 * b(2 - 2 * x);
   return (1 - Math.cos(gain * Math.PI)) * 0.5;
 }
-export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0x200, RIGHT: 0x400, GRAB: 0x20000, WALK: 0x40000, SHUFFLE: 0x400000, BLOCK: 0x800000, STANCE_FAST: 0x2000000, STANCE_BAL: 0x4000000, STANCE_HEAVY: 0x8000000 };
+export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0x200, RIGHT: 0x400, THROW: 0x800, GRAB: 0x20000, WALK: 0x40000, SHUFFLE: 0x400000, BLOCK: 0x800000, STANCE_FAST: 0x2000000, STANCE_BAL: 0x4000000, STANCE_HEAVY: 0x8000000 };
 const HULL_MIN = [-13, -13, 0], HULL_MAX = [13, 13, 72];
 const STEP = 18;
+const SURF_SKY_FLAG = 4, SURF_NODRAW_FLAG = 0x80, CONTENTS_WALLRUN = 0x80000;
 // [I] forward/side input the charge dampen scales. cl_forwardspeed defaults to 450, but that hits the speed cap almost
 // at once, leaving charge progress no effect and running faster than players report, so this uses sv_maxspeed's 175.
 const CHARGE_INPUT = 175;
@@ -51,6 +52,7 @@ export class Player {
       moveCooldown: 0, animTime: 0, moveAmt: 0, frozen: false, forceImpulse: null,
       kneeling: false, airState: 0, airT: 0, landT: 0, landCycle: 0, airLandCycle: 0, moveCycle: 0, moveSeq: null, chargeCycle: 0, chargeFade: 0, chargeRun: 0, chargeAnims: null,
       bufferMask: 0, bufferT: 0, airStance: false, queuedStance: -1, touchdown: null,
+      wallRuns: 0, wallAngle: 0, wallDir: [1, 0, 0], throwCooldown: 0,
     });
   }
 
@@ -68,6 +70,7 @@ export class World {
   constructor({ bsp, data, cvars, assets, map = '' }) {
     Object.assign(this, { bsp, data, cv: cvars, assets, map });
     this.time = 0;
+    this.stars = []; this.nextStar = 1;
     this.tickCount = 0;
     this.players = [];
     this.events = [];
@@ -85,6 +88,7 @@ export class World {
     this.duel.update();
     for (const p of this.players) { if (p.isBot && p.brain) p.brain(p, this); }
     for (const p of this.players) this.tickPlayer(p);
+    this.updateStars();
     this.softCollide();
     for (const p of this.players) p.prevButtons = p.buttons;
   }
@@ -97,6 +101,8 @@ export class World {
     p.jumpGravityT = Math.max(0, p.jumpGravityT - dt);
     p.blockCooldown = Math.max(0, p.blockCooldown - dt);
     p.moveCooldown = Math.max(0, p.moveCooldown - dt);
+    p.throwCooldown = Math.max(0, p.throwCooldown - dt);
+    if (p.onGround) p.wallRuns = 0; // [R 180379e9f; that the ground is what clears it is I]
     p.turnRateTime = Math.max(0, p.turnRateTime - dt);
     const pressed = p.pressed & BUFFERED_BUTTONS;
     if (pressed) { p.bufferMask = pressed; p.bufferT = INPUT_BUFFER_TIME; }
@@ -157,22 +163,63 @@ export class World {
     Object.assign(a, { name: def.name, def, stanceType: stance, anim: def.charge_animation, seq: this.seqInfo(p, def.charge_animation).seq });
   }
 
-  // [R 180379df0] input priority order: current action update, shuffle, grab, roll, block, attack.
+  // [R 180379df0] input priority order: current action update, shuffle, grab, roll, wall run, block, throw, attack.
   // Everything reads held or buffered, so holding a button repeats it once it can run again.
   dispatchInput(p) {
     if (p.kneeling) { this.dispatchKneeling(p); return; }
     if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); this.startEvade(p, 'Shuffle'); return; }
     if (p.wants(IN.GRAB) && this.canGrab(p)) { p.use(IN.GRAB); this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
     if (p.wants(IN.ROLL) && this.canEvade(p)) { p.use(IN.ROLL); this.startEvade(p, 'Roll'); return; }
+    if (this.tryWallRun(p)) return;
+    if (p.wants(IN.BLOCK) && this.isFeintSword(p)) {
+      if (this.canFeint(p)) { p.use(IN.BLOCK); this.startFeint(p); }
+      return this.dispatchAttack(p);
+    }
     // [R 180374d80] +block requires ground, nothing locking, attack not held and the post-attack cooldown elapsed
     if (p.wants(IN.BLOCK) && p.onGround && !p.act && !(p.buttons & IN.ATTACK) && !p.blockCooldown) {
       p.use(IN.BLOCK);
       this.startAction(p, this.blockActionName(p), { dir: this.moveDir(p) });
       return;
     }
+    this.dispatchAttack(p);
+  }
+
+  dispatchAttack(p) {
+    if (this.tryThrow(p)) return;
     // [R 18037a1bd] the current action decides whether anything new can start
     if (p.act && !this.canCancel(p) && !this.attackCancelsEvade(p)) return;
     if (!p.isAttacking() && p.use(IN.ATTACK)) this.startAttack(p);
+  }
+
+  // [R 180373580] an attack's start and end hold off the block, for swords whose tech is block
+  postAttackCooldown(p) {
+    if (String(this.sword(p).blocktech || 'block').toLowerCase() === 'block') p.blockCooldown = this.cv.f('bb_block_post_attack_cooldown');
+  }
+
+  // [R 180372010] Out of a swing the feint is released at once: the same animation and tier carry on, and the cut lock
+  // loses the time already spent, plus 10 frames. From nothing it charges. Either way the string goes back to its start.
+  startFeint(p) {
+    const a = p.act;
+    if (a?.phase === 'swing') {
+      const amount = this.cv.f(a.stanceType === 3 ? 'bb_feint_air_cancel_amount' : 'bb_feint_cancel_amount');
+      const lock = num(a.tierDef?.lock_duration, -1) * amount;
+      Object.assign(a, { id: 3, feint: true, tracer: [], trCount: 0, trDone: true, lockDur: lock, lock: Math.max(0, lock - (a.lockDur - a.lock + TICK * 10)) });
+      p.blockCooldown = this.cv.f('bb_feint_cooldown');
+      this.emit({ type: 'feint', id: p.id });
+    } else this.startAttack(p, true);
+    p.comboIdx = 0;
+  }
+
+  isFeintSword(p) { return String(this.sword(p).blocktech).toLowerCase() === 'feint'; }
+
+  // [R 180374e29, 180374f14] Unlike a block a feint needs no ground and ignores the attack button. It starts from nothing, or
+  // over a swing whose tracer isn't testing and isn't finished: before its second sample, or in the extension after its
+  // script. [R 1803742bc] the check for an attack is false while it charges, so a press during one waits for the release.
+  canFeint(p) {
+    const a = p.act;
+    if (p.blockCooldown > 0 || a?.feint) return false;
+    if (!a) return true;
+    return !!a.attack && a.phase === 'swing' && !a.trDone && !(a.trCount > 0 && a.bladeRing?.length > 1);
   }
 
   // [R 180379df0, 18037b510] downed: jump gets up, block is the recovery intercept (also late in a roll),
@@ -186,6 +233,287 @@ export class World {
     if (a) return;
     if (p.pressed & IN.ATTACK) this.startAttack(p);
     else if (b & (IN.FORWARD | IN.BACK | IN.LEFT | IN.RIGHT)) this.startAction(p, 'KneelRoll', { dir: this.moveDir(p) });
+  }
+
+  // -------------------------------------------------------------------- wall moves
+  // [R 180378a3b] A hull hit that counts as a wall. Not sky. Invisible brushes count only if they're toolsnodraw, or
+  // carry contents 0x80000, which mappers put on clip brushes around an arena to make them runnable; a brush with
+  // that flag also wins when it's nearer than what the first trace hit.
+  wallTrace(from, to, mins, maxs) {
+    const t = this.bsp.traceBox(from, to, mins, maxs, MASK_PLAYERSOLID);
+    if (t.startsolid || t.fraction >= 1) return null;
+    const flagged = this.bsp.traceBox(from, to, mins, maxs, CONTENTS_WALLRUN);
+    const runnable = (flagged.fraction < 1 || flagged.startsolid) && (flagged.contents & CONTENTS_WALLRUN) !== 0;
+    const ti = t.texinfo >= 0 ? this.bsp.texinfo[t.texinfo] : null;
+    const clip = ti && ti.flags & SURF_NODRAW_FLAG;
+    if (clip && /TOOLSNODRAW/i.test(this.bsp.texdata[ti.texdata]?.name ?? '')) return t;
+    if (ti && ti.flags & SURF_SKY_FLAG) return null;
+    if (clip && !runnable) return null;
+    return runnable && flagged.fraction < t.fraction ? flagged : t;
+  }
+
+  // [R 180378780] Roll held in any stance, or during a roll's first 45% or from 83% on, with a wall 16 units ahead of
+  // where the fighter looks. Five runs before touching the ground again. True if the run started, or if the button
+  // alone consumed this tick's input. A roll keeps its input ([I] the game's roll cancel would otherwise never fire).
+  tryWallRun(p) {
+    const a = p.act, rolling = a?.name === 'Roll';
+    if (a?.kind === 'wallrun' || a?.kind === 'climb' || p.kneeling || !p.alive) return false;
+    if (rolling) {
+      const x = a.dur > 0 ? a.t / a.dur : 0;
+      if (x >= 0.45 && x < 0.83) return false;
+    } else {
+      if (p.moveCooldown > 0 || (a && a.lock > 0) || !(p.buttons & IN.ROLL)) return false;
+    }
+    if (p.wallRuns >= 5) return false;
+    const { forward: f, right: r } = angleVectors([0, p.viewYaw, 0]);
+    const o = p.origin;
+    const mins = [HULL_MIN[0] + 3, HULL_MIN[1] + 3, HULL_MAX[2] * 0.5], maxs = [HULL_MAX[0] - 3, HULL_MAX[1] - 3, HULL_MAX[2]];
+    const t = this.wallTrace(o, [o[0] + f[0] * 16, o[1] + f[1] * 16, o[2]], mins, maxs);
+    if (!t) return !rolling;
+    const l = Math.hypot(t.normal[0], t.normal[1]);
+    if (l < 0.01) return !rolling;
+    const n = [t.normal[0] / l, t.normal[1] / l, 0], d = n[0] * r[0] + n[1] * r[1];
+    const k = Math.min(1, Math.abs(d) * (1 / 0.9));
+    p.wallAngle = -Math.pow(k, Math.log(0.4) / Math.log(0.5)) * (d >= 0 ? 1 : -1);
+    p.wallRuns++;
+    p.wallDir = [-n[0], -n[1], 0];
+    const na = this.startAction(p, 'WallRun', { force: true });
+    if (!na) return false;
+    // [R 18034f700] each run after the first plays slower
+    const rate = 1 - Math.pow(Math.max(0, p.wallRuns - 1) * 0.2, Math.log(0.1) / Math.log(0.5));
+    na.dur /= rate; na.lock = na.lockDur = na.dur;
+    p.yaw = Math.atan2(n[1], n[0]) * 180 / Math.PI + 180;
+    p.onGround = false;
+    return true;
+  }
+
+  // Ends a wall move on the next stage, holding off new wall runs and rolls
+  wallNext(p, name) {
+    p.act = null;
+    this.startAction(p, name, { force: true });
+    p.moveCooldown = this.cv.f('bb_walljump_delay');
+  }
+
+  // [R 18034e530] Follows the wall until it's gone or the animation runs out, then transitions. A wall overhead ends it
+  // while running straight up; jump springs off.
+  updateWallRun(p) {
+    const a = p.act, o = p.origin, d = p.wallDir;
+    if (a.lock <= 0) { this.wallNext(p, 'WallTransTo'); return; }
+    if (p.pressed & IN.JUMP) { this.wallJump(p); return; }
+    if (Math.abs(p.wallAngle) < 0.4) {
+      const up = this.wallTrace(o, [o[0], o[1], o[2] + 5], [HULL_MIN[0] + 3, HULL_MIN[1] + 3, 0], [HULL_MAX[0] - 3, HULL_MAX[1] - 3, HULL_MAX[2]]);
+      if (up) { this.wallNext(p, 'WallTransTo'); return; }
+    }
+    const t = this.wallTrace(o, [o[0] + d[0] * 30, o[1] + d[1] * 30, o[2] + d[2] * 30], [HULL_MIN[0], HULL_MIN[1], HULL_MIN[2] + 10], HULL_MAX);
+    if (!t || t.normal[2] < -0.707) { this.wallNext(p, 'WallTransTo'); return; }
+    if (t.normal[0] * d[0] + t.normal[1] * d[1] + t.normal[2] * d[2] > -0.707 && t.normal[2] < 0.1) { this.wallNext(p, 'WallTransTo'); return; }
+    this.setWall(p, t.normal);
+  }
+
+  setWall(p, n) {
+    p.wallDir = [-n[0], -n[1], -n[2]];
+    p.yaw = Math.atan2(n[1], n[0]) * 180 / Math.PI + 180;
+  }
+
+  // [R 18034fbc0] Stays against the wall and drifts along it the way the run was angled. Jump springs off; losing the
+  // wall lets go. Landing also ends it [I].
+  updateWallSlide(p) {
+    const a = p.act, o = p.origin, d = p.wallDir, v = p.vel;
+    if (p.pressed & IN.JUMP) { this.wallSlideJump(p); return; }
+    if (p.onGround) { p.act = null; return; }
+    const t = this.wallTrace(o, [o[0] + d[0] * 30, o[1] + d[1] * 30, o[2] + d[2] * 30], [HULL_MIN[0], HULL_MIN[1], HULL_MIN[2] + 10], HULL_MAX);
+    if (!t || t.normal[2] < -0.707) { p.act = null; return; }
+    this.setWall(p, t.normal);
+    const n = p.wallDir, into = v[0] * n[0] + v[1] * n[1];
+    v[0] -= n[0] * into; v[1] -= n[1] * into;
+    const k = p.wallAngle * TICK * this.cv.f('bb_wallslide_velocity');
+    v[0] += n[1] * k; v[1] -= n[0] * k;
+    void a;
+  }
+
+  // The player's move input in world space, without what pushes into the wall
+  wallInput(p) {
+    const { forward: f, right: r } = angleVectors([p.pitch, p.viewYaw, 0]);
+    let fm = 0, sm = 0;
+    if (p.buttons & IN.FORWARD) fm += 1;
+    if (p.buttons & IN.BACK) fm -= this.cv.f('sv_backspeed');
+    if (p.buttons & IN.RIGHT) sm += 1;
+    if (p.buttons & IN.LEFT) sm -= 1;
+    const l = Math.hypot(fm, sm);
+    if (!l) return [0, 0, 0];
+    const s = Math.min(this.cv.f('sv_maxspeed'), l) / l;
+    const w = [(f[0] * fm + r[0] * sm) * s, (f[1] * fm + r[1] * sm) * s, (f[2] * fm + r[2] * sm) * s], d = p.wallDir;
+    const into = w[0] * d[0] + w[1] * d[1] + w[2] * d[2];
+    return into > 0 ? [w[0] - d[0] * into, w[1] - d[1] * into, w[2] - d[2] * into] : w;
+  }
+
+  // [R 18034f770, 180350dc0] The later in the move, the harder the jump; running straight up keeps its height.
+  // Speed carried in is capped and upward only, then it pushes off the wall and up, and the move input adds on.
+  wallJump(p) {
+    const a = p.act, cv = this.cv, x = a.lockDur > 0 ? a.lock / a.lockDur : 0;
+    const late = Math.max(0, Math.min(1, 1 - (2 * x - 1)));
+    const ang = Math.abs(p.wallAngle), height = Math.max(0, Math.min(1, ang * 2)) * 0.25 + 0.75;
+    p.wallAngle = ang < 0.4 ? 0 : Math.sign(p.wallAngle);
+    this.wallNext(p, 'WallFlip');
+    const v = p.vel, cz = v[2] < 0 ? 0 : Math.min(cv.f('bb_walljump_max_inherited_z_velocity'), v[2]);
+    const sp = Math.hypot(v[0], v[1]), keep = sp > 0 ? Math.min(cv.f('bb_walljump_max_inherited_xy_velocity'), sp) / sp : 0;
+    const xy = cv.f('bb_walljump_impulse_xy_min') + (cv.f('bb_walljump_impulse_xy_max') - cv.f('bb_walljump_impulse_xy_min')) * late;
+    const z = (cv.f('bb_walljump_impulse_z_min') + (cv.f('bb_walljump_impulse_z_max') - cv.f('bb_walljump_impulse_z_min')) * late) * height;
+    const d = p.wallDir, w = this.wallInput(p), s = cv.f('bb_walljump_impulse_xy_from_input_scale');
+    p.vel = [v[0] * keep - d[0] * xy + w[0] * s, v[1] * keep - d[1] * xy + w[1] * s, cz - d[2] * xy + z + w[2] * s];
+    p.onGround = false;
+    this.emit({ type: 'jump', id: p.id });
+  }
+
+  // [R 180350a70] off a slide: a fixed push, with more of the move input
+  wallSlideJump(p) {
+    const cv = this.cv, d = p.wallDir, xy = cv.f('bb_wallslide_impulse_xy'), z = cv.f('bb_wallslide_impulse_z');
+    this.wallNext(p, 'WallFlip');
+    const w = this.wallInput(p), s = cv.f('bb_wallslide_impulse_xy_from_input_scale');
+    p.vel = [p.vel[0] - d[0] * xy + w[0] * s, p.vel[1] - d[1] * xy + w[1] * s, p.vel[2] - d[2] * xy + z + w[2] * s];
+    p.onGround = false;
+    this.emit({ type: 'jump', id: p.id });
+  }
+
+  // -------------------------------------------------------------------- throwables
+  // [R 18037a22e] E, off its own delay and with nothing locking the fighter. dispatchInput runs it before attacks.
+  tryThrow(p) {
+    if (p.throwCooldown > 0 || p.kneeling || (p.act && p.act.lock > 0) || !p.wants(IN.THROW)) return false;
+    p.use(IN.THROW);
+    return !!this.startAction(p, 'ThrowWeapon', { force: true, extra: { thrown: false } });
+  }
+
+  // [R 18034d6c0, 18034d8f0, 18034dd10] the star leaves bb_throwable_spawn_delay into the action. Letting go of the
+  // button past the cancelable time and before that ends it.
+  updateThrowWeapon(p) {
+    const a = p.act, cv = this.cv;
+    if (a.thrown) return;
+    if (a.t >= cv.f('bb_throwable_spawn_delay')) { a.thrown = true; this.launchStar(p); return; }
+    if (cv.f('bb_throwable_cancelable') && a.t >= cv.f('bb_throwable_cancelable_min_time') && !(p.buttons & IN.THROW)) { p.act = null; p.throwCooldown = cv.f('bb_throwable_delay'); }
+  }
+
+  // [R 18034e020] The nearest thing to the crosshair among enemies in reach and in sight. The cone tightens the closer they are.
+  starTarget(p) {
+    const cv = this.cv, eye = [p.origin[0], p.origin[1], p.origin[2] + 40];
+    const { forward: f, right: r, up: u } = angleVectors([p.pitch, p.viewYaw, 0]);
+    let best = null;
+    for (const q of this.players) {
+      if (q === p || !q.alive) continue;
+      const c = [q.origin[0], q.origin[1], q.origin[2] + 36], d = sub(c, eye), l = Math.hypot(d[0], d[1], d[2]);
+      if (l > cv.f('bb_throwable_target_distance_max') || !l) continue;
+      const n = [d[0] / l, d[1] / l, d[2] / l];
+      if (dot(f, n) <= 0) continue;
+      const k = Math.min(1, l / 256);
+      if (1 - Math.abs(dot(r, n)) < 0.97 + (cv.f('bb_throwable_target_dot_min_right') - 0.97) * k) continue;
+      if (1 - Math.abs(dot(u, n)) < 0.97 + (cv.f('bb_throwable_target_dot_min_up') - 0.97) * k) continue;
+      if (this.bsp.traceBox(eye, c, [0, 0, 0], [0, 0, 0], MASK_PLAYERSOLID).fraction < 1) continue;
+      best = q;
+    }
+    return best;
+  }
+
+  // [R 18034db18, 180383b64] Aimed along the view, pitched down a little; farther throws spread more, and leave at an
+  // angle they then curve back from.
+  launchStar(p) {
+    const cv = this.cv, c = this.char(p);
+    const eye = [p.origin[0], p.origin[1], p.origin[2] + 64];
+    const { forward: f } = angleVectors([p.pitch + cv.f('bb_throwable_pitch_offset'), p.viewYaw, 0]);
+    const end = [eye[0] + f[0] * 56756, eye[1] + f[1] * 56756, eye[2] + f[2] * 56756];
+    const aimHit = this.bsp.traceBox(eye, end, [-5, -5, -5], [5, 5, 5], MASK_PLAYERSOLID);
+    const target = this.starTarget(p);
+    const aim = target ? [target.origin[0], target.origin[1], target.origin[2] + 36] : [...aimHit.endpos];
+    const world = this.poseWorld(p), att = c.root.attachments.find((x) => x.name === 'anim_attachment_LH');
+    const hand = att ? matPoint(world[att.bone], [att.local[3], att.local[7], att.local[11]]) : [p.origin[0], p.origin[1], p.origin[2] + 50];
+    const dist = Math.hypot(aim[0] - hand[0], aim[1] - hand[1], aim[2] - hand[2]), near = Math.max(0, Math.min(1, dist / 512));
+    const spread = near * cv.f('bb_throwable_random_amount');
+    const tgt = [0, 1, 2].map((i) => aim[i] + (Math.random() * 2 - 1) * spread);
+    const speed = cv.f('bb_throwable_speed'), arc = near * cv.f(target ? 'bb_throwable_arc_amount_homing' : 'bb_throwable_arc_amount');
+    const to = sub(tgt, hand), v = norm([to[0] - to[1] * arc, to[0] * arc + to[1], to[2]]);
+    this.stars.push({
+      id: this.nextStar++, owner: p.id, type: this.data.characters[p.character].throwableweapon, pos: hand, vel: scale(v, speed), target: target?.id ?? null, aim: tgt,
+      aimT: dist / speed * 0.9, homeT: Math.max(0, dist - 128) * (1 / 9000) + 0.2, homeTotal: Math.max(0, dist - 128) * (1 / 9000) + 0.2, steering: true, life: cv.f('bb_throwable_life_duration'),
+    });
+    this.emit({ type: 'star_throw', id: p.id, star: this.nextStar - 1, kind: this.stars.at(-1).type, pos: hand });
+  }
+
+  // [R 180385660] Turns toward the aim point, leading a target by its velocity, until pointing there. Then a star with
+  // no target falls.
+  updateStars() {
+    const cv = this.cv, speed = cv.f('bb_throwable_speed');
+    for (const s of this.stars) {
+      s.life -= TICK; s.aimT -= TICK; s.homeT = Math.max(0, s.homeT - TICK);
+      const tg = s.target !== null ? this.player(s.target) : null, target = tg?.alive ? tg : null;
+      const ballistic = !s.steering && !target;
+      const home = s.homeTotal > 0 ? 1 - s.homeT / s.homeTotal : 1;
+      let want = s.aim;
+      if (target) {
+        const c = [target.origin[0], target.origin[1], target.origin[2] + 36], l = Math.hypot(target.vel[0], target.vel[1], target.vel[2]);
+        const vel = l > 400 ? scale(target.vel, 400 / l) : target.vel, t = Math.hypot(c[0] - s.pos[0], c[1] - s.pos[1], c[2] - s.pos[2]) / speed;
+        const lead = [c[0] + vel[0] * t, c[1] + vel[1] * t, c[2]];
+        want = [0, 1, 2].map((i) => s.aim[i] + (lead[i] - s.aim[i]) * home);
+      }
+      const cur = norm(s.vel);
+      let dir = norm(sub(want, s.pos));
+      if (ballistic || (s.aimT <= 0 && !target)) dir = cur;
+      const delta = sub(dir, cur);
+      let next;
+      if (Math.hypot(delta[0], delta[1], delta[2]) < 0.015) { next = dir; s.steering = false; } else {
+        const rate = Math.min(1, (cv.f('bb_throwable_angular_speed') + (target ? home * cv.f('bb_throwable_angular_speed_homing') : 0)) * TICK);
+        next = [cur[0] + delta[0] * rate, cur[1] + delta[1] * rate, cur[2] + delta[2] * rate];
+      }
+      s.vel = scale(norm(next), speed);
+      if (ballistic) s.vel[2] -= TICK * cv.f('bb_throwable_gravity');
+      const end = [s.pos[0] + s.vel[0] * TICK, s.pos[1] + s.vel[1] * TICK, s.pos[2] + s.vel[2] * TICK];
+      const w = this.bsp.traceBox(s.pos, end, [-1, -1, -1], [1, 1, 1], MASK_PLAYERSOLID);
+      const hit = this.starHitsPlayer(s, end, w.fraction);
+      if (hit) { this.starHit(s, hit); s.done = true; continue; }
+      if (w.fraction < 1) { this.emit({ type: 'star_hit', what: 'world', star: s.id, kind: s.type, pos: w.endpos, normal: w.normal }); s.done = true; continue; }
+      s.pos = end;
+      if (s.life <= 0) s.done = true;
+    }
+    if (this.stars.some((s) => s.done)) this.stars = this.stars.filter((s) => !s.done);
+  }
+
+  // The swept star against each fighter's hull, grown by the type's bounds_player
+  starHitsPlayer(s, end, limit) {
+    const R = 8;
+    for (const q of this.players) {
+      if (q.id === s.owner || !q.alive) continue;
+      const mn = [q.origin[0] + HULL_MIN[0] - R, q.origin[1] + HULL_MIN[1] - R, q.origin[2] + HULL_MIN[2] - R], mx = [q.origin[0] + HULL_MAX[0] + R, q.origin[1] + HULL_MAX[1] + R, q.origin[2] + HULL_MAX[2] + R];
+      let t0 = 0, t1 = limit, inside = true;
+      for (let i = 0; i < 3 && inside; i++) {
+        const d = end[i] - s.pos[i];
+        if (Math.abs(d) < 1e-6) { if (s.pos[i] < mn[i] || s.pos[i] > mx[i]) inside = false; continue; }
+        const a = (mn[i] - s.pos[i]) / d, b = (mx[i] - s.pos[i]) / d;
+        t0 = Math.max(t0, Math.min(a, b)); t1 = Math.min(t1, Math.max(a, b));
+        if (t0 > t1) inside = false;
+      }
+      if (inside) return q;
+    }
+    return null;
+  }
+
+  // [R 180382303, 18038245a] Facing it, an idle fighter catches it on reflex and a blocking or parrying one over a wider
+  // arc. A fighter already swinging, rolling or shuffling takes no reaction. Otherwise it damages and interrupts.
+  starHit(s, v) {
+    const cv = this.cv, a = v.act;
+    const { forward: f } = angleVectors([0, v.viewYaw, 0]);
+    const n = norm([s.pos[0] - v.origin[0], s.pos[1] - v.origin[1], s.pos[2] - v.origin[2] - 36]), d = dot(f, n);
+    const evading = a?.name === 'Roll' || a?.name === 'Shuffle' || a?.name === 'AirDash';
+    const swinging = a?.attack && a.phase !== 'charge';
+    let blocked = !a ? d >= cv.f('bb_throwable_autoblock_dot_min') : (a.kind === 'block' || a.kind === 'parry' || a.kind === 'guard') && d >= cv.f('bb_throwable_block_or_parry_dot_min');
+    if (a?.name === 'Interrupt' || a?.name === 'KneelParry') blocked = true;
+    const reacts = !evading && !swinging && !v.kneeling;
+    const def = this.data.action('ThrowWeapon');
+    if (blocked) {
+      if (reacts) this.startAction(v, 'AutoBlockThrowable', { force: true, anim: def.normal_block });
+      this.emit({ type: 'star_hit', what: 'blocked', star: s.id, kind: s.type, pos: s.pos, id: v.id });
+      return;
+    }
+    v.health -= cv.f('bb_throwable_damage_player');
+    this.emit({ type: 'star_hit', what: 'player', star: s.id, kind: s.type, pos: s.pos, id: v.id });
+    if (v.health <= 0) { this.kill(v, this.player(s.owner)); return; }
+    if (reacts && cv.f('bb_throwable_interrupt_on_hit')) this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction });
   }
 
   // [R 180376fc0, 180379df0] needs the ground, no active lock and the shared combat-move delay elapsed
@@ -303,10 +631,10 @@ export class World {
   }
 
   // [R 180374910] picks the attack from stance/direction/combo index, then CAttackAction charges
-  startAttack(p) {
+  startAttack(p, feint = false) {
     const stance = this.stanceNow(p);
     const dir = this.moveDir(p);
-    if (this.time - p.comboIdxTime > this.cv.f('bb_combo_reset_time')) p.comboIdx = 0; // [I] combo string reset timing
+    if (this.time - p.comboIdxTime > this.cv.f('bb_string_reset_time')) p.comboIdx = 0; // [R 180374916] checked as an attack starts
     const def = p.kneeling ? this.data.action('RecoveryAttack') : this.data.attackFor(p.character, stance, dir, p.comboIdx);
     if (!def) return;
     p.hitsThisSwing = 0;
@@ -321,6 +649,13 @@ export class World {
     this.emit({ type: 'attack_started', id: p.id, dir });
     // the recovery attack skips the charge and always swings at tier 3, and it stands you up
     if (p.kneeling) { p.kneeling = false; this.releaseAttack(p, 2); }
+    if (!feint) this.postAttackCooldown(p);
+    // [R 1803491b0, 1803494c0] A feint charges the attack the stance and string would give, under the block button
+    if (feint && p.act) {
+      Object.assign(p.act, { id: 3, feint: true });
+      p.blockCooldown = this.cv.f('bb_feint_cooldown');
+      this.emit({ type: 'feint', id: p.id });
+    }
   }
 
   // [R 180346a70] release: tier from elapsed charge, animation/lock from the tierN block; lock <= seq + 0.2
@@ -336,6 +671,8 @@ export class World {
     const { seq, dur } = this.seqInfo(p, anim);
     let lock = num(tierDef.lock_duration, dur);
     lock = Math.min(lock, dur + 0.2);
+    // [R 180349550] a feint's lock is a fraction of the tier's, and no more than that: a tier without one ends at once
+    if (a.feint) lock = num(tierDef.lock_duration, -1) * cv.f(a.stanceType === 3 ? 'bb_feint_air_cancel_amount' : 'bb_feint_cancel_amount');
     Object.assign(a, {
       phase: 'swing', tier, tierDef, anim, seq, dur, t: 0, lock, lockDur: lock, cycle: 0,
       // [R 180345941, 180345be6, 180346630, 180346737] once released these come from the tier: move_lock alone, animation_move
@@ -346,7 +683,8 @@ export class World {
       runScale: num(tierDef.runspeedscale, 1), damage: num(tierDef.damage, 10), kbScale: num(tierDef.knockback_scale ?? a.def.knockback_scale, 1),
       tracer: this.data.tracers[p.character]?.[String(anim).toUpperCase()] || [], trCycle: 0, trNew: 0, trDone: false, trExt: cv.f('bb_tracer_parry_extension_duration'), bladeRing: [], prevCycle: 0, stanceAtRelease: this.stanceNow(p),
     });
-    p.blockCooldown = lock + cv.f('bb_block_post_attack_cooldown');
+    // [R 180349300] no tracer, no string advance
+    if (a.feint) { a.tracer = []; a.trCount = 0; a.trDone = true; return; }
     p.comboIdx++; // [R 180374120] attackFor wraps it at the stance's string length
     p.comboIdxTime = this.time;
     // [R 180346ced] a sword that doesn't knock down plays the soft sound
@@ -362,7 +700,9 @@ export class World {
     a.lock -= TICK;
     if (a.attack && a.phase === 'charge') {
       // [R 180345cf0] release when the button is up or the charge timer runs out
-      if (!(p.buttons & IN.ATTACK) || a.lock <= 0 || this.cv.f('bb_nocharge')) this.releaseAttack(p);
+      // [R 1803493b0] a feint stays charging while its own button is held
+      const ending = !(p.buttons & IN.ATTACK) || a.lock <= 0 || this.cv.f('bb_nocharge');
+      if (ending && !(a.feint && a.lock > 0 && p.buttons & IN.BLOCK)) this.releaseAttack(p);
       else {
         // [R 180345d8a] tier 2 announces itself when reached; tier 3 waits for the release
         if (!a.chargeTier && a.t >= this.cv.f('bb_charge_tier2_time') * num(this.sword(p).chargetime, 1)) { a.chargeTier = 1; this.emit({ type: 'charge_tier', id: p.id, tier: 1 }); }
@@ -371,19 +711,31 @@ export class World {
     }
     if (a.attack && this.swingCancels(p, a)) {
       p.act = null;
+      if (!a.feint) this.postAttackCooldown(p);
       p.moveCooldown = this.cv.f('bb_shuffle_postattack_delay');
       return;
     }
     if (a.dur > 0) { a.prevCycle = a.cycle; a.cycle = !a.attack && a.seq?.flags & 1 ? (a.t / a.dur) % 1 : Math.min(1, a.t / a.dur); }
     if (a.kind === 'grab') this.updateGrab(p);
     if (a.kind === 'thrown') this.updateThrown(p);
+    if (a.kind === 'wallrun') this.updateWallRun(p);
+    else if (a.kind === 'wallslide') this.updateWallSlide(p);
+    else if (a.kind === 'throwweapon') this.updateThrowWeapon(p);
+    else if (a.kind === 'walltransto') {
+      // [R 180350ca0] into the slide when it finishes; jump springs off the same way as from a run
+      if (p.pressed & IN.JUMP) this.wallJump(p);
+      else if (a.lock <= 0) this.wallNext(p, 'WallSlide');
+    } else if (a.kind === 'wallflip' && p.onGround && a.t > 0.1) p.act = null; // landing ends it [I]
     if (p.act !== a) return;
     // block is held while the button is down [R 18034b3a0 family; hold semantics I]
     if (a.kind === 'block' && (p.buttons & IN.BLOCK) && a.lock <= 0) { a.lock = 0.0001; return; }
     if (a.lock <= 0 && p.alive) {
       if (a.kind === 'kill') return;
       p.act = null;
+      if (a.kind === 'throwweapon') p.throwCooldown = this.cv.f('bb_throwable_delay'); // [R 18034dda0]
       if (a.attack) p.moveCooldown = this.cv.f('bb_shuffle_postattack_delay'); // [R 1803457e0]
+      if (a.feint) p.blockCooldown = this.cv.f('bb_feint_cooldown'); // [R 180349290]
+      else if (a.attack) this.postAttackCooldown(p);
       if (a.kind === 'thrown') this.startAction(p, 'KneelingFalling', { force: true }); // [R 18034d460]
       else if (a.kind === 'kneelingfalling') p.kneeling = true; // [R 18034c2a0]
     }
@@ -545,7 +897,8 @@ export class World {
   rootMotion(p, dt) {
     const a = p.act, c = this.char(p);
     const c1 = a.cycle, c0 = Math.max(0, c1 - dt / a.dur);
-    const m0 = c.seqMovement(a.seq, c0), m1 = c.seqMovement(a.seq, c1);
+    const px = a.seq.groupSize[0] > 1 && a.seq.paramIndex[0] >= 0 ? c.blendFor(a.seq, 0, 0, p.wallAngle)[0] : null;
+    const m0 = c.seqMovement(a.seq, c0, px), m1 = c.seqMovement(a.seq, c1, px);
     const d = sub(m1, m0);
     const { forward: f, right: r } = angleVectors([0, p.yaw, 0]);
     // Source model local: +x forward, +y left
@@ -970,6 +1323,8 @@ export class World {
       att.comboCount = combo.comboCount; att.comboResetTime = combo.comboResetTime;
       if (cr.scaled) { att.vel[0] += cr.attackerPush[0]; att.vel[1] += cr.attackerPush[1]; }
     }
+    // [R 18036d066] the victim's string starts over; a condition just before this wasn't identified
+    if (cv.f('bb_string_reset') && (result === C.HIT_LANDED || result === C.HIT_BLOCKED || result === C.HIT_GUARD_BROKEN)) vic.comboIdx = 0;
     const o = C.resolveHitOutcome({
       defense, resultAfterDefense: result, blockReturnedTrue: blockedTrue, attackerDirection: a.dir, attackerTier: a.tier, attackerActionId: a.id, hitsThisSwing: att.hitsThisSwing,
       attackerLockTimer: Math.fround(a.lock), attackerForce: [0, 0, 0], hitImpulse: [0, 0, 0], turnSelfX: fnum(sw.interceptturnselfx), recoveryBonusOnHit: fnum(sw.recoverybonusonhit),
@@ -1180,7 +1535,11 @@ export class World {
     if (a && !(a.attack && a.phase === 'charge')) {
       if (a.upperBody) {
         // Upper-body actions leave locomotion running, or use the action's own lower body.
-        if (a.lowerBody) base = a.lowerBody;
+        if (a.lowerBody) {
+          base = a.lowerBody;
+          const { dur } = this.seqInfo(p, base);
+          if (!a.anim && dur > 0) baseCycle = (a.t / dur) % 1;
+        }
         if (a.anim) { upper = a.anim; upperCycle = a.dur > 0 ? a.cycle : a.t % 1; }
       } else if (a.anim) {
         base = a.anim;
@@ -1198,14 +1557,14 @@ export class World {
     const legs = p.airState === 1 && a ? Math.max(0, Math.min(1, (this.time - p.airT) * 8.33333)) : 0;
     const td = p.touchdown;
     const touch = td && td.weight > 0 ? [td.anim, 1 - Math.max(0, td.t) / td.total, td.weight] : null;
-    return { base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch };
+    return { base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch, wr: p.wallAngle };
   }
 }
 
 // Turns an animOf() result into sequence layers. Shared by the client and server hitboxes.
 export function animLayers(c, an) {
   const base = c.seqForActivity(an.base ?? an.b) || c.seqForActivity('ACT_BB_B_IDLE') || c.seqs[0];
-  const [px, py] = c.blendFor(base, an.mx, an.my);
+  const [px, py] = c.blendFor(base, an.mx, an.my, an.wr ?? 0);
   const out = [{ seq: base, cycle: an.baseCycle ?? an.bc, weight: 1, px, py }];
   const armsFrom = an.armsFrom ?? an.af;
   const run = armsFrom ? c.seqForActivity(armsFrom) : null;
@@ -1333,6 +1692,7 @@ export class Duel {
   }
 
   startRound(first) {
+    this.w.stars = [];
     const cv = this.w.cv;
     this.round++;
     const pair = this.pickSpawnPair();
@@ -1340,6 +1700,7 @@ export class Duel {
       const p = this.w.player(id);
       if (!p) return;
       const s = pair[i % pair.length];
+      if (p.nextLoadout) { Object.assign(p, p.nextLoadout); p.nextLoadout = null; }
       p.reset([s.o[0], s.o[1], s.o[2] + 1], s.yaw);
       p.frozen = true;
     });

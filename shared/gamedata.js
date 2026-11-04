@@ -96,10 +96,44 @@ export class GameData {
     // the sword each character starts with (any character can use any type):
     // characters.txt "sword" id_N -> itemdefid in items.json -> sword_type
     d.charSword = {};
+    d.charSwordItem = {};
     const items = JSON.parse(await text('scripts/items.json')).items;
     for (const k of Object.keys(d.characters)) {
       const id = parseInt(String(d.characters[k].sword).replace('id_', ''), 10);
       d.charSword[k] = items.find((i) => i.itemdefid === id)?.sword_type;
+      d.charSwordItem[k] = id;
+    }
+    // every sword in the item catalog, by its type's script name
+    d.swordItems = items.filter((i) => i.item_type === 'sword' && d.swordTypes[String(i.sword_type).toLowerCase()]).map((i) => ({
+      id: i.itemdefid, name: i.name, type: String(i.sword_type).toLowerCase(), model: i.model, scabbard: i.scabbard_model ?? null, skin: parseInt(i.skin ?? '0', 10) || 0,
+      swing: i.custom_swing_sound ?? null, swingVol: parseFloat(i.swing_blend_vol ?? '1'), hit: i.custom_hit_sound ?? null, hitVol: parseFloat(i.hit_blend_vol ?? '1'),
+    }));
+    // what a fighter can wear: the skin family, a mask, a cape, one attachment per slot. Attachments are either a
+    // body group on the fighter or a model of their own. The fighters have no heads, so a mask always shows;
+    // [I] the default is the mask named after the character, models/masks/default_<character>.
+    const lookKinds = new Set(['skin', 'mask', 'cape', 'attachment', 'colour', 'emblem']);
+    d.lookItems = items.filter((i) => lookKinds.has(i.item_type)).map((i) => ({
+      id: i.itemdefid, kind: i.item_type, name: i.name, character: i.character?.toLowerCase() ?? null, slot: i.slotid?.toLowerCase() ?? null,
+      model: i.item_type === 'skin' ? null : i.model ?? null, skin: parseInt(i.skin ?? '0', 10) || 0, body: i.bodygroup?.toLowerCase() ?? null, material: i.custom_material ?? null,
+      icon: i.icon ?? null, colour: i.item_type === 'colour' ? i.colour ?? null : null, emblem: i.item_type === 'emblem' ? i.material ?? null : null,
+    })).filter((i) => i.kind === 'skin' || i.model || i.body || i.colour || i.emblem);
+    d.defaultLook = {};
+    for (const k of Object.keys(d.characters)) {
+      const mask = d.lookItems.find((i) => i.kind === 'mask' && i.model?.toLowerCase().includes(`/default_${k}/`));
+      d.defaultLook[k] = mask ? [mask.id] : [];
+    }
+    // the customization screen's text, from the game's own strings
+    d.charText = {};
+    const english = await text('resource/basemodui_english.txt').then((t) => t.replace(/\0/g, ''), () => '');
+    const say = (key) => new RegExp(`"${String(key).replace('#', '')}"\\s+"([^"]*)"`, 'i').exec(english)?.[1] ?? null;
+    for (const [k, v] of Object.entries(d.characters)) d.charText[k] = say(v.description);
+    // throwables, with "extends" resolved
+    d.throwables = {};
+    const tt = kvFind(parseKV(await text('scripts/throwabletypes.txt')), 'throwabletypes');
+    for (const n of tt.value) if (Array.isArray(n.value)) d.throwables[n.key.toLowerCase()] = toObj(n.value);
+    for (const k of Object.keys(d.throwables)) {
+      const s = d.throwables[k];
+      if (s.extends && d.throwables[s.extends.toLowerCase()]) d.throwables[k] = { ...d.throwables[s.extends.toLowerCase()], ...s };
     }
     // tracers: per character, activity -> sorted cycle list
     d.tracers = {};
