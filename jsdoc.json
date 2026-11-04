@@ -1,6 +1,6 @@
 {
     "source": {
-    "include": ["shared"]
+    "include": ["shared", "README.md"]
     },
     "opts": {
     "destination": "./docs",
