@@ -3,6 +3,7 @@
 // client. Assets are read from the player's own install and never leave this machine's HTTP scope.
 // Usage: node server/main.mjs [--game "<Blade Symphony dir>"] [--map duel_temple] [--port 27015] [--bot]
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { readFileSync, existsSync, createReadStream, statSync } from 'node:fs';
 import { dirname, join, normalize, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,13 +15,28 @@ import { World, Player, Cvars, TICK } from '../shared/sim.js';
 import { makeBotBrain } from '../shared/bot.js';
 import { buildSnapshot } from '../shared/snapshot.js';
 import { acceptWebSocket } from './ws.mjs';
+import { createRelay } from '../p2p/relay.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   game: { type: 'string', default: resolve(here, '../../..') }, map: { type: 'string', default: 'duel_temple' }, port: { type: 'string', default: '27015' },
-  bot: { type: 'boolean', default: false }, host: { type: 'string', default: 'localhost' }, // changing this default to localhost so people do not accidentally expose even on lan...don't wanna hear about it.
+  hosted: { type: 'boolean', default: false }, token: { type: 'string' }, bot: { type: 'boolean', default: false }, host: { type: 'string', default: 'localhost' }, // changing this default to localhost so people do not accidentally expose even on lan...don't wanna hear about it.
 } });
 const roots = [join(args.game, 'berimbau'), join(args.game, 'core')];
+// --hosted: this server only hands out the page and game files, and introduces peers; the fights happen between browsers. Everything
+// needs the token, and only the folders the client reads are served, not the whole install. It's meant to sit behind an HTTPS proxy.
+const HOSTED_FOLDERS = /^(maps|materials|models|sound|particles|scripts|resource|media)\//i;
+const token = args.hosted ? args.token ?? process.env.BSDUEL_TOKEN ?? crypto.randomBytes(16).toString('hex') : null;
+/**
+ * @param {string|null} given A token from a request.
+ * @returns {boolean} Whether it's the right one, in time that doesn't give away how close it was.
+ */
+const tokenMatches = (given) => {
+  if (!given) return false;
+  const a = crypto.createHash('sha256').update(given).digest(), b = crypto.createHash('sha256').update(token).digest();
+  return crypto.timingSafeEqual(a, b);
+};
+const cookieToken = (req) => /(?:^|;\s*)bsduel=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? null;
 /**
  * Finds a game file by relative path, and refuses any path that would leave the game folder.
  * @param {string} rel Path under the game.
@@ -185,6 +201,15 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = decodeURIComponent(url.pathname);
   res.setHeader('Cache-Control', 'no-cache');
+  if (args.hosted) {
+    // The link carries the token once; a cookie carries it for everything the page then loads
+    const inLink = url.searchParams.get('token');
+    if (!tokenMatches(cookieToken(req)) && !tokenMatches(inLink)) { res.statusCode = 401; res.setHeader('Content-Type', 'text/plain'); res.end('This is a private test. Ask for a link.'); return; }
+    if (tokenMatches(inLink)) res.setHeader('Set-Cookie', `bsduel=${encodeURIComponent(inLink)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : ''}`);
+    // Checked as it will resolve: an encoded ../ decodes into something that only looks like it's inside
+    const wanted = normalize(path.slice(6)).replace(/\\/g, '/');
+    if (path.startsWith('/game/') && !HOSTED_FOLDERS.test(wanted) && wanted !== 'cfg/config_default.cfg') { res.statusCode = 403; res.end(); return; }
+  }
   if (path === '/api/info') {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist, desc: data.charText[k], menuIdle: v.menuidleanim, menuSelect: v.menuselectanim }])), tracers: data.tracers, swords: SWORD_LABELS, swordNames: Object.fromEntries(Object.keys(SWORD_LABELS).map((k) => [k, SWORD_LABELS[k].replace(/ \(.*/, '')])), charSword: data.charSword, charSwordItem: data.charSwordItem, swordItems: data.swordItems, lookItems: data.lookItems, defaultLook: data.defaultLook, throwables: data.throwables, charThrowable: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, v.throwableweapon])), swordSounds: Object.fromEntries(Object.entries(data.swordTypes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([n]) => n.startsWith('sound')))])), strings: Object.fromEntries(Object.keys(data.characters).map((k) => [k, [0, 1, 2, 3].map((st) => { const f = data.stanceFor(k, st)?.forward; return (f?.['action[]'] || [f?.action]).filter(Boolean).length; })])), bot: args.bot }));
@@ -193,7 +218,7 @@ const server = http.createServer((req, res) => {
   if (path.startsWith('/game/')) {
     const f = findFile(path.slice(6));
     if (!f) { res.statusCode = 404; res.end(); return; }
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', `${args.hosted ? 'private' : 'public'}, max-age=86400`);
     res.setHeader('Content-Length', statSync(f).size);
     createReadStream(f).pipe(res);
     return;
@@ -206,14 +231,20 @@ const server = http.createServer((req, res) => {
   res.setHeader('Content-Type', MIME[extname(full)] || 'application/octet-stream');
   createReadStream(full).pipe(res);
 });
+const relay = createRelay();
 server.on('upgrade', (req, socket) => {
+  if (args.hosted) {
+    if (!req.url.startsWith('/relay') || !tokenMatches(cookieToken(req))) { socket.destroy(); return; }
+    relay(req, socket);
+    return;
+  }
   if ((req.headers.upgrade || '').toLowerCase() !== 'websocket' || !req.url.startsWith('/ws')) { socket.destroy(); return; }
   conns.add(acceptWebSocket(req, socket, onMessage, onClose));
 });
 
 // ---------------------------------------------------------------- main loop
 let last = performance.now(), acc = 0, tickNo = 0, maxTickMs = 0;
-setInterval(() => {
+if (!args.hosted) setInterval(() => {
   const now = performance.now();
   acc = Math.min(acc + (now - last) / 1000, 0.25);
   last = now;
@@ -227,4 +258,7 @@ setInterval(() => {
     if (tickNo % 2 === 0) { const s = snapshot(); for (const c of conns) c.send({ ...s, duel: s.arenas[c.player?.arena ?? 0], pv: c.player && world.players.includes(c.player) && c.player.alive ? world.previewAttack(c.player) : null }); }
   }
 }, 5);
-server.listen(+args.port, args.host, () => console.log(`duel server listening on http://${args.host ? args.host : 'localhost'}:${args.port}${args.bot ? ' (bot enabled)' : ''}`));
+server.listen(+args.port, args.host, () => {
+  console.log(`duel server listening on http://${args.host ? args.host : 'localhost'}:${args.port}${args.bot ? ' (bot enabled)' : ''}${args.hosted ? ' (hosted: peer to peer only)' : ''}`);
+  if (args.hosted) console.log(`share this, with your own address and any room name: https://<your domain>/?p2p=myroom&token=${token}`);
+});

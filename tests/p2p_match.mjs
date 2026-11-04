@@ -1,5 +1,6 @@
 // The whole thing: two browsers each load the real client, with the renderer, find each other through the relay, and fight using real
 // key and mouse events. Both see the same fight, no desync, and no page errors. Screenshots go next to the given prefix.
+// With HOSTED=1 both load everything from one --hosted server with a token, and it reports how much a player downloads.
 // Needs Playwright: PWDIR=<dir with playwright installed> node tests/p2p_match.mjs "<install>" <screenshot prefix>
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -8,9 +9,10 @@ const { chromium } = require('playwright');
 const [install, out] = process.argv.slice(2);
 const repo = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const PORTS = [27093, 27094], RELAY = 27095;
-const procs = [spawn('node', ['p2p/relay.mjs', '--port', String(RELAY), '--host', '127.0.0.1'], { cwd: repo, stdio: 'ignore' })];
+const HOSTED = !!process.env.HOSTED, TOKEN = 'check-token';
+const procs = HOSTED ? [spawn('node', ['server/main.mjs', '--hosted', '--token', TOKEN, '--map', 'duel_temple', '--port', String(PORTS[0]), '--host', '127.0.0.1', '--game', install], { cwd: repo, stdio: 'ignore' })] : [spawn('node', ['p2p/relay.mjs', '--port', String(RELAY), '--host', '127.0.0.1'], { cwd: repo, stdio: 'ignore' })];
 // Each player runs their own server from their own install; here both are on this machine
-for (const port of PORTS) procs.push(spawn('node', ['server/main.mjs', '--map', 'duel_temple', '--port', String(port), '--host', '127.0.0.1', '--game', install], { cwd: repo, stdio: 'ignore' }));
+if (!HOSTED) for (const port of PORTS) procs.push(spawn('node', ['server/main.mjs', '--map', 'duel_temple', '--port', String(port), '--host', '127.0.0.1', '--game', install], { cwd: repo, stdio: 'ignore' }));
 await new Promise((r) => setTimeout(r, 8000));
 let fails = 0;
 const check = (ok, what) => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); };
@@ -23,13 +25,15 @@ try {
     const pg = await b.newPage({ viewport: { width: 960, height: 540 } });
     pg.on('pageerror', (e) => errs[i].push(e.message));
     pg.on('console', (m) => { if (m.type() === 'error' && !/404/.test(m.text())) errs[i].push(m.text().slice(0, 200)); });
-    await pg.goto(`http://127.0.0.1:${PORTS[i]}/?nolock=1&vol=0&char=${i ? 'ryoku' : 'knight'}&p2p=check&relay=ws://127.0.0.1:${RELAY}&delay=${i ? 3 : 2}&rollback=8`);
+    const place = HOSTED ? `http://127.0.0.1:${PORTS[0]}/?token=${TOKEN}&` : `http://127.0.0.1:${PORTS[i]}/?relay=ws://127.0.0.1:${RELAY}&`;
+    await pg.goto(`${place}nolock=1&vol=0&char=${i ? 'ryoku' : 'knight'}&p2p=check&delay=${i ? 3 : 2}&rollback=8`);
     await pg.waitForFunction(() => document.getElementById('status')?.textContent === 'Ready.', { timeout: 240000 });
     pages.push(pg);
   }
   for (const pg of pages) await pg.click('#go');
   for (const pg of pages) await pg.waitForFunction(() => window.duelDebug?.p2p && window.duelDebug.state?.me, { timeout: 120000 });
   check(true, 'both found each other through the relay and started');
+  if (HOSTED) { const load = await pages[0].evaluate(() => { const e = performance.getEntriesByType('resource'); return { n: e.length, mb: e.reduce((s, x) => s + (x.decodedBodySize || 0), 0) / 1e6, game: e.filter((x) => x.name.includes('/game/')).length }; }); console.log(`     a player loaded ${load.n} files (${load.game} from the game), ${load.mb.toFixed(0)} MB before the fight, uncompressed`); }
   const state = (pg) => pg.evaluate(() => { const m = window.duelDebug.p2p, w = m.world, s = m.session; return { frame: s.frame, hp: w.players.map((p) => p.health), duel: w.duels[0].state, round: w.duels[0].round, wins: w.duels[0].wins, stats: s.stats, desynced: s.desynced, hashes: [...s.hashes], ch: w.players.map((p) => p.character), id: m.myId, fps: window.duelDebug.fps, act: w.players.map((p) => p.act?.name ?? null), o: w.players.map((p) => p.origin.map((x) => +x.toFixed(1))) }; });
   for (const pg of pages) await pg.waitForFunction(() => window.duelDebug.state?.duel?.s === 'fight', { timeout: 60000 });
   const s0 = await Promise.all(pages.map(state));

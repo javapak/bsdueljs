@@ -150,7 +150,8 @@ function onSnapshot(m) {
   if (me && (!didInitCam || me.fz)) { camYaw = me.y; didInitCam = true; }
   frozen = !!me?.fz;
 }
-// ?p2p=room&relay=ws://host:27016 plays the person in that room directly, with no server in the fight. ?stun=stun:host:port helps across the internet.
+// ?p2p=room plays the person in that room directly, with no server in the fight. ?relay=ws://host:27016 says who introduces you, by default
+// the server this page came from. ?stun=stun:host:port helps across the internet.
 const p2pRoom = params.get('p2p');
 // ?delay= sets this player's input delay in ticks, and ?rollback= how far back their game rewinds
 const whole = (name, dflt, lo, hi) => { const n = parseInt(params.get(name) ?? '', 10); return Number.isNaN(n) ? dflt : Math.max(lo, Math.min(hi, n)); };
@@ -159,7 +160,7 @@ let p2pMatch = null;
 async function connectP2P() {
   try {
     p2pMatch = await startP2PMatch({
-      relay: params.get('relay') ?? `ws://${location.hostname}:27016`, room: p2pRoom, bsp, mapBytes: bspBytes, read: (p) => fetchGame(p),
+      relay: params.get('relay') ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/relay`, room: p2pRoom, bsp, mapBytes: bspBytes, read: (p) => fetchGame(p),
       hello: { name: customize.name, character: customize.char, item: customize.sword, look: customize.look, color: customize.color, options: { gae: !!cvar('bb_gae'), sde: !!cvar('bb_sde'), ibt: cvar('bb_ibt') } },
       iceServers: params.has('stun') ? [{ urls: params.get('stun') }] : [], inputDelay: whole('delay', 2, 0, 8), maxRollback: whole('rollback', 8, 1, 16),
       input: readInput, onSnapshot, onEvent, onStatus: (s, bad) => { if (s) banner(s, bad ? 8 : 60); },
@@ -857,6 +858,7 @@ customize.onConfirm(() => {
     return;
   }
   started = true;
+  $('credit')?.remove();
   audio.start();
   customize.hide();
   $('hud').style.display = 'block';

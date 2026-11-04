@@ -66,6 +66,7 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `node tests/rollback_check.mjs "<install>"` | save and restore lose nothing; fights that keep rewinding match straight runs bit for bit; two peers over simulated latency, jitter, loss and a late start agree, and match a replay of their inputs; the deepest rewind fits in a tick |
 | `node tests/p2p_check.mjs "<install>" [seconds] [ms] [loss]` | a real match over real WebRTC through the real relay, Chrome against Firefox with added lag and loss, no renderer: rollbacks happen and state hashes agree across engines |
 | `PWDIR=<playwright dir> node tests/p2p_match.mjs "<install>" <prefix>` | two full clients with the renderer find each other through the relay and fight with real key and mouse events: same fight, no desync, no page errors |
+| `node tests/hosted_check.mjs "<install>"` | `--hosted`: nothing without the token, only the folders the client reads with it, encoded path tricks refused, relay behind the token too |
 | `node tests/determinism_check.mjs "<install>"` | seeded fights replay identically in Node, Chrome and Firefox: the whole game state, bit for bit, every eighth tick. Names the first field that differs. What rollback rests on |
 | `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
@@ -129,6 +130,23 @@ The relay refuses to pair people whose game files or sim code differ, since thos
 **Settled by test:** Node, Chrome and Firefox replay fights identically; save and restore lose nothing; Chrome against Firefox over real WebRTC with added lag and loss agree on every state hash; two full clients fight each other. **Not tested:** real networks (everything so far ran on one machine, with Chrome's mDNS hiding switched off and Firefox's equivalent too, so ordinary browsers on a LAN may behave differently), Safari, ARM CPUs, maps other than duel_temple, wall moves in a rollback, and Firefox with the renderer.
 
 **Not done:** a hit taken back by a rollback has already played its sound and sparks, and nothing retracts them, though `takeEvents` reports it. A desync is detected and reported but not repaired. There's no TURN, so some networks can't connect. Loadouts and input options are fixed when the match starts. A match repeats until someone leaves, with no lobby. The other player's tab in the background holds up the game after a quarter of a second.
+
+### Hosting a private test
+
+One server can give a few people everything, so they only need a link: `node server/main.mjs --hosted --game <install> --map duel_temple`. It runs no fights. It serves the page and only the game folders the client reads, and introduces peers on `/relay`. Everything needs the token, printed at startup, or set with `--token` or `BSDUEL_TOKEN`. The link carries it once, and a cookie after that.
+
+This hands out the game's files, so it's for private testing: don't post the link. WebGPU needs HTTPS, so it stays on localhost behind a proxy. On a VPS with a domain:
+
+    steamcmd +force_install_dir /srv/bladesymphony +login <steam account> +app_update 225600 validate +quit
+    node server/main.mjs --hosted --game /srv/bladesymphony --map duel_temple
+
+    # /etc/caddy/Caddyfile: Caddy gets the certificate itself, and passes WebSockets through
+    your.domain {
+      encode gzip
+      reverse_proxy localhost:27015
+    }
+
+The steamcmd download may need the Windows depot on Linux (`+@sSteamCmdForcePlatformType windows` before the login). That and the login are untested.
 
 ## Pause menu and options
 
