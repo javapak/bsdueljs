@@ -17,7 +17,7 @@ import { makeBotBrain } from '../shared/bot.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
   game: { type: 'string', default: resolve(here, '../../..') }, map: { type: 'string', default: 'duel_temple' }, port: { type: 'string', default: '27015' },
-  bot: { type: 'boolean', default: false }, host: { type: 'string', default: '0.0.0.0' },
+  bot: { type: 'boolean', default: false }, host: { type: 'string', default: 'localhost' }, // changing this default to localhost so people do not accidentally expose even on lan...don't wanna hear about it.
 } });
 const roots = [join(args.game, 'berimbau'), join(args.game, 'core')];
 /**
