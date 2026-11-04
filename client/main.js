@@ -92,7 +92,7 @@ const clockOffset = { v: 0, set: false };
 let camYaw = 0, camPitch = 8;
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name: customize.name, character: customize.char, item: customize.sword, look: customize.look }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name: customize.name, character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
   ws.onclose = () => { myId = null; started = false; customize.show(false); status('Disconnected from server.', true); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
@@ -307,7 +307,7 @@ function frameCharacter(p, ci, world) {
   const data = inst.bones.data;
   const src = ci.char.bones;
   for (let i = 0; i < bones.length && i < 128; i++) data.set(matMul(bones[i], src[i].poseToBone), i * 12);
-  data.set(p.id === myId ? [0.9, 0.7, 0.3, 0] : [0.4, 0.6, 1.0, 0], 128 * 12);
+  data.set(lookTint(p), 128 * 12);
   return { bones: inst.bones, mesh: inst.body ?? ci.mesh, world: bones };
 }
 // Values the charge proxies hand bb_charge, from the character's material
@@ -327,9 +327,16 @@ function setCharge(fc, amount, color) {
 }
 // The first entry of the character's colorlist; the game networks the player's choice as m_vecCharacterColor [I: which entry]
 // An outfit color from the customization screen stands in for the character's own [I]
-function lookColor(ids) {
-  const c = ids?.map((id) => info.lookItems.find((i) => i.id === id)).find((i) => i?.colour)?.colour;
-  return c ? c.trim().split(/\s+/).map((x) => Number(x) / 255) : null;
+function lookColor(p) {
+  const item = p.lk?.map((id) => info.lookItems.find((i) => i.id === id)).find((i) => i?.colour);
+  if (!item) return null;
+  const rgb = item.picker ? p.cc : item.colour.trim().split(/\s+/).map(Number);
+  return rgb ? rgb.map((x) => x / 255) : null;
+}
+// [R client.dll 1802b1510] what materials with the PlayerTint proxy get: the color, and no tint at all for pure white
+function lookTint(p) {
+  const c = lookColor(p);
+  return c && !(c[0] === 1 && c[1] === 1 && c[2] === 1) ? [c[0], c[1], c[2], 1] : [1, 1, 1, 0];
 }
 function charColor(key) {
   const v = String(info.characters[key]?.color?.color ?? '1 1 1').trim().split(/\s+/).map(Number);
@@ -392,7 +399,7 @@ customize.hooks.onCharacter = () => { menuAnim.t0 = -1; };
 const menuAnim = { t0: -1, char: null };
 function previewFrame(time) {
   R.loadMenuEnv();
-  const parts = [], key = customize.char, p = { id: 'menu', c: key, lk: customize.look, it: customize.sword };
+  const parts = [], key = customize.char, p = { id: 'menu', c: key, lk: customize.look, it: customize.sword, cc: customize.color };
   loadChar(key);
   const entry = charCache.get(key);
   if (!entry._resolved) entry.then((v) => { entry._resolved = v; });
@@ -410,6 +417,7 @@ function previewFrame(time) {
     const world = entityMatrix([0, 0, 0], [0, MENU_YAW, 0]);
     const bones = c.boneMatrices(c.evalLayers([{ seq, cycle: Math.max(0, cycle), weight: 1 }]), world, { pitch: 0, yaw: MENU_YAW });
     bones.forEach((b, i) => { if (i < 128) inst.bones.data.set(matMul(b, c.bones[i].poseToBone), i * 12); });
+    inst.bones.data.set(lookTint(p), 128 * 12);
     R.menuLights(inst.bones);
     const fc = { bones: inst.bones, mesh: null, world: bones };
     const look = lookParts(p, ci);
@@ -426,6 +434,7 @@ function previewFrame(time) {
       // the slot places the sword's grip bone, as a fighter's hand does
       const m = matMul(wheelSlot(i), part.mesh.model.bones[0].poseToBone);
       for (let b = 0; b < part.mesh.model.bones.length && b < 128; b++) part.bones.data.set(m, b * 12);
+      part.bones.data.set(lookTint(p), 128 * 12);
       R.menuLights(part.bones);
       parts.push(part);
     }
@@ -461,7 +470,7 @@ async function tick() {
       const world = entityMatrix(p.o, [0, p.y, 0]);
       const fc = frameCharacter(p, ci, world);
       R.lightCharacter(fc, p.o);
-      const color = lookColor(p.lk) ?? charColor(p.c);
+      const color = lookColor(p) ?? charColor(p.c);
       const st = fx.updatePlayer(p, ci.char, fc.world, ci.gripBone, color);
       setCharge(fc, st.charge, color);
       characters.push(fc);
@@ -528,7 +537,7 @@ function closeCustomize() {
 customize.onCancel(closeCustomize);
 customize.onConfirm(() => {
   if (started) {
-    ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look }));
+    ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
     banner('Loadout changes next round');
     closeCustomize();
     return;

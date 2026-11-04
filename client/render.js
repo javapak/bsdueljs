@@ -338,16 +338,23 @@ fn ambient(n: vec3f) -> vec3f {
 }
 // [R phong_ps30, dynamic lights]
 @fragment fn fs(i: O) -> @location(0) vec4f {
-  let c = textureSample(t0, samp, i.uv); if (c.a < CUT) { discard; }
+  let c0 = textureSample(t0, samp, i.uv); if (c0.a < CUT) { discard; }
   let nt = textureSample(normalMap, samp, i.uv);
   let ex = textureSample(specExp, samp, i.uv);
+  // [R phong_ps30, proxy client.dll 1802b1350] $phongexponenttintmaskenable: the exponent texture's blue is how much of the
+  // base becomes its own brightness in the fighter's color; below 0.01 it's left alone
+  var c = c0;
+  if (m.ext.y > 0.0 && b.tint.a > 0.0 && ex.b >= 0.01) {
+    let grey = dot(c0.rgb, vec3f(0.3, 0.59, 0.11));
+    c = vec4f(mix(c0.rgb, grey * mix(vec3f(1), b.tint.rgb, ex.b), b.tint.a), c0.a);
+  }
   if (m.misc.y > 0.0) { return finish(c.rgb); }
   let N = worldNormal(nt.xyz * 2.0 - 1.0, i.n, i.t);
   let view = normalize(cam.eye.xyz - i.wp);
   let NdotV = dot(N, view);
   let f = 1.0 - saturate(NdotV);
   let fres = fresnel(f);
-  let lum = dot(c.rgb, vec3f(0.3, 0.59, 0.11));
+  let lum = dot(c0.rgb, vec3f(0.3, 0.59, 0.11));
   let specMaskRaw = mix(mix(nt.a, c.a, m.ctl.x), lum, m.ctl.y);
   var mask = mix(c.a, specMaskRaw, m.env.w);
   mask = mix(mask, 1.0 - mask, m.ctl.w);
@@ -1301,7 +1308,7 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
       phong ? 1 : 0, on(p.$rimlight) ? 1 : 0, f('$rimlightboost', 1), on(p.$rimmask) ? 1 : 0,
       diffWarp ? 1 : 0, specWarp ? 1 : 0, envName ? 1 : 0, on(p.$phongalbedotint) ? 1 : 0,
       on(p.$selfillum) ? 1 : 0, /^unlit/.test(vm?.shader ?? '') ? 1 : 0, on(p.$normalmapalphaenvmapmask) ? 1 : on(p.$basealphaenvmapmask) ? 2 : 0, f('$envmapcontrast', 0),
-      f('$envmapsaturation', 1), 0, 0, 0]));
+      f('$envmapsaturation', 1), on(p.$phongexponenttintmaskenable) && exp ? 1 : 0, 0, 0]));
     return d.createBindGroup({ layout: this.gModelMat, entries: [base, specWarp || this.white, diffWarp || this.white, normal || this.flatNormal, exp || this.noExp].map((t, binding) => ({ binding, resource: t.createView() })).concat({ binding: 5, resource: { buffer: u } }) });
   }
 
@@ -1414,7 +1421,8 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
       if (out[i]) data.set(matMul(out[i], b.poseToBone), i * 12); else if (rigid) data.set(rigid, i * 12);
     });
     part.shown = matched;
-    // lit where its fighter stands
+    // lit where its fighter stands, in the fighter's color
+    data.set(fc.bones.data.subarray(128 * 12, 128 * 12 + 4), 128 * 12);
     data.set(fc.bones.data.subarray(LIGHT_DATA), LIGHT_DATA);
     part.bones.env = fc.bones.env;
   }

@@ -81,7 +81,7 @@ The client runs the game's own `.pcf` particle definitions and `.vmt` materials 
 
 ## Outfits
 
-`client/customize.js` recreates the customization screen as the start menu, and `M` opens it in a match. Its layout is `resource/ui/basemodui/customization.res`, the preview uses that file's camera and lights, and the sword wheel is read from `client.dll`. Everything is unlocked. Choices made in a match take effect at the next round ([I]), and persist in the browser. The backdrop, the fighter's facing and the sword groups (one per type) are inferred; glow, chat color and emblems can be picked or aren't offered but don't render yet, and an outfit color tints the charge and trail only.
+`client/customize.js` recreates the customization screen as the start menu, and `M` opens it in a match. Its layout is `resource/ui/basemodui/customization.res`, the preview uses that file's camera and lights, and the sword wheel is read from `client.dll`. Everything is unlocked. Choices made in a match take effect at the next round ([I]), and persist in the browser. The backdrop, the fighter's facing and the sword groups (one per type) are inferred; glow, chat color and emblems can be picked or aren't offered but don't render yet, and an outfit color sets the charge, the trail and the tint on materials with the `PlayerTint` proxy.
 
 Skin, mask, cape and one attachment per slot come from `scripts/items.json`, chosen on that screen or with `?skin= ?mask= ?cape= ?arms= ?back= ?chest= ?legs=` (item ids). Attachments are a body group on the fighter or a model of their own, merged by bone name. Capes hang from the fighter's `anim_cape` attachment. Jiggle bones on capes and mask hair are `shared/jiggle.js`, read from `client.dll`, with each model's own parameters.
 

@@ -115,7 +115,7 @@ export class GameData {
     d.lookItems = items.filter((i) => lookKinds.has(i.item_type)).map((i) => ({
       id: i.itemdefid, kind: i.item_type, name: i.name, character: i.character?.toLowerCase() ?? null, slot: i.slotid?.toLowerCase() ?? null,
       model: i.item_type === 'skin' ? null : i.model ?? null, skin: parseInt(i.skin ?? '0', 10) || 0, body: i.bodygroup?.toLowerCase() ?? null, material: i.custom_material ?? null,
-      icon: i.icon ?? null, colour: i.item_type === 'colour' ? i.colour ?? null : null, emblem: i.item_type === 'emblem' ? i.material ?? null : null,
+      icon: i.icon ?? null, colour: i.item_type === 'colour' ? i.colour ?? null : null, picker: !!i.is_picker, emblem: i.item_type === 'emblem' ? i.material ?? null : null,
     })).filter((i) => i.kind === 'skin' || i.model || i.body || i.colour || i.emblem);
     d.defaultLook = {};
     for (const k of Object.keys(d.characters)) {
