@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(process.env.PWDIR + '/');
 const { chromium } = require('playwright');
 const [url, out] = process.argv.slice(2);
-const b = await chromium.launch({ headless: true, args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=metal', '--ignore-gpu-blocklist'] });
+const b = await chromium.launch({ channel: process.env.PWCHANNEL, headless: true, args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=metal', '--ignore-gpu-blocklist'] });
 const pg = await b.newPage({ viewport: { width: 1280, height: 720 } });
 const errs = [];
 pg.on('pageerror', (e) => errs.push(e.message));

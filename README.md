@@ -38,7 +38,8 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `shared/bsp.js`, `mdl.js`, `kv.js`, `gamedata.js` | game file formats and script loading |
 | `shared/bot.js` | practice bot |
 | `server/main.mjs` | HTTP, WebSocket, game loop |
-| `client/` | WebGPU renderer, VTF decoding, input, HUD, audio, third person camera (`camera.js`), pause menu (`pausemenu.js`, `settings.js`) |
+| `client/` | WebGPU renderer, VTF decoding, input, HUD, audio, third person camera (`camera.js`), pause menu (`pausemenu.js`, `settings.js`), a peer to peer match (`p2pgame.js`, `peer.js`) |
+| `p2p/relay.mjs` | introduces two peers, and nothing else |
 | `tests/` | see below |
 
 ## Tests
@@ -64,6 +65,7 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `node tests/detmath_check.mjs` | `shared/detmath.js` stays within 1-3 units in the last place of the engine's own functions, special values included, and uses only what IEEE 754 defines |
 | `node tests/rollback_check.mjs "<install>"` | save and restore lose nothing; fights that keep rewinding match straight runs bit for bit; two peers over simulated latency, jitter, loss and a late start agree, and match a replay of their inputs; the deepest rewind fits in a tick |
 | `node tests/p2p_check.mjs "<install>" [seconds] [ms] [loss]` | a real match over real WebRTC through the real relay, Chrome against Firefox with added lag and loss, no renderer: rollbacks happen and state hashes agree across engines |
+| `PWDIR=<playwright dir> node tests/p2p_match.mjs "<install>" <prefix>` | two full clients with the renderer find each other through the relay and fight with real key and mouse events: same fight, no desync, no page errors |
 | `node tests/determinism_check.mjs "<install>"` | seeded fights replay identically in Node, Chrome and Firefox: the whole game state, bit for bit, every eighth tick. Names the first field that differs. What rollback rests on |
 | `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
@@ -110,6 +112,21 @@ Holding `Tab` shows every arena in three columns, each with a live view through 
 Skin, mask, cape and one attachment per slot come from `scripts/items.json`, chosen on that screen or with `?skin= ?mask= ?cape= ?arms= ?back= ?chest= ?legs=` (item ids). Attachments are a body group on the fighter or a model of their own, merged by bone name. Capes hang from the fighter's `anim_cape` attachment. Jiggle bones on capes and mask hair are `shared/jiggle.js`, read from `client.dll`, with each model's own parameters.
 
 The fighter models have no heads, so a mask always shows. That the default is `models/masks/default_<character>` is inferred from the names. Masks and capes don't collide with anything, and workshop items aren't loaded.
+
+## Peer to peer rollback (experimental)
+
+Two people play a duel directly, with no server in the fight. Each browser runs the whole sim and sends only inputs. The other player's inputs are guessed until they arrive, and a wrong guess rewinds and plays forward again, so your own moves respond straight away. It's on the `p2p-rollback` branch.
+
+    node p2p/relay.mjs                                           # one of you, or anywhere both can reach; it only introduces you
+    node server/main.mjs --game "<install>"                      # each player, from their own install
+
+Then each opens `http://localhost:27015/?p2p=<room>&relay=ws://<relay address>:27016` with the same room name. Across the internet, add `&stun=stun:<host>:<port>`. The connection is direct, so each player learns the other's IP address.
+
+The relay refuses to pair people whose game files or sim code differ, since those would desync. The sim's math goes through `shared/detmath.js` and its random numbers through `World.random`, because the spec leaves `Math.sin` and friends up to each engine: Firefox and V8 disagree on the last bit, and so do different versions of V8. Anything new in the sim has to keep to that, and `determinism_check` names the field if it doesn't. Anything on a fighter counts as saved and compared state unless `simstate.js` says otherwise.
+
+**Settled by test:** Node, Chrome and Firefox replay fights identically; save and restore lose nothing; Chrome against Firefox over real WebRTC with added lag and loss agree on every state hash; two full clients fight each other. **Not tested:** real networks (everything so far ran on one machine, with Chrome's mDNS hiding switched off and Firefox's equivalent too, so ordinary browsers on a LAN may behave differently), Safari, ARM CPUs, maps other than duel_temple, wall moves in a rollback, and Firefox with the renderer.
+
+**Not done:** a hit taken back by a rollback has already played its sound and sparks, and nothing retracts them, though `takeEvents` reports it. A desync is detected and reported but not repaired. There's no TURN, so some networks can't connect. Loadouts and input options are fixed when the match starts. A match repeats until someone leaves, with no lobby. The other player's tab in the background holds up the game after a quarter of a second.
 
 ## Pause menu and options
 

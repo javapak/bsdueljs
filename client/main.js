@@ -13,6 +13,7 @@ import { Audio } from './audio.js';
 import { parsePhy, Ragdoll } from '/shared/ragdoll.js';
 import { TracerPreview, OPACITY, buildPath } from '/shared/tracerpreview.js';
 import { ThirdPersonCamera } from './camera.js';
+import { startP2PMatch } from './p2pgame.js';
 import { createPauseMenu } from './pausemenu.js';
 import { cvar, onCvar, boundTo, loadDefaultBinds } from './settings.js';
 
@@ -129,19 +130,43 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.t === 'welcome') { myId = m.id; sendOptions(); if (params.has('ready')) sendReady(); }
     else if (m.t === 'full') status('Server already has two players.', true);
-    else if (m.t === 'snap') {
-      snaps.push(m);
-      audio.onSnap(m, (key) => charCache.get(key)?._resolved?.char);
-      for (const p of m.players) audio.onCombo(p.id, p.ci ?? 0);
-      if (snaps.length > 40) snaps.shift();
-      const off = m.time - performance.now() / 1000;
-      if (!clockOffset.set) { clockOffset.v = off; clockOffset.set = true; } else clockOffset.v += (off - clockOffset.v) * 0.05;
-      const me = myId != null && m.players.find((p) => p.id === myId);
-      // before the round starts the camera stays on the spawn's facing
-      if (me && (!didInitCam || me.fz)) { camYaw = me.y; didInitCam = true; }
-      frozen = !!me?.fz;
-    } else if (m.t === 'ev') m.ev.forEach(onEvent);
+    else if (m.t === 'snap') onSnapshot(m);
+    else if (m.t === 'ev') m.ev.forEach(onEvent);
   };
+}
+/**
+ * A new state to draw, from the server or a peer to peer session here.
+ * @param {object} m The snapshot.
+ */
+function onSnapshot(m) {
+  snaps.push(m);
+  audio.onSnap(m, (key) => charCache.get(key)?._resolved?.char);
+  for (const p of m.players) audio.onCombo(p.id, p.ci ?? 0);
+  if (snaps.length > 40) snaps.shift();
+  const off = m.time - performance.now() / 1000;
+  if (!clockOffset.set) { clockOffset.v = off; clockOffset.set = true; } else clockOffset.v += (off - clockOffset.v) * 0.05;
+  const me = myId != null && m.players.find((p) => p.id === myId);
+  // before the round starts the camera stays on the spawn's facing
+  if (me && (!didInitCam || me.fz)) { camYaw = me.y; didInitCam = true; }
+  frozen = !!me?.fz;
+}
+// ?p2p=room&relay=ws://host:27016 plays the person in that room directly, with no server in the fight. ?stun=stun:host:port helps across the internet.
+const p2pRoom = params.get('p2p');
+// A local sim has nothing to wait for, so it draws just one tick behind rather than allowing for the network
+const RENDER_DELAY = p2pRoom ? 1 / 64 : 0.05;
+let p2pMatch = null;
+/** Finds the other player and starts the match. The rest of the client just sees snapshots and events. */
+async function connectP2P() {
+  try {
+    p2pMatch = await startP2PMatch({
+      relay: params.get('relay') ?? `ws://${location.hostname}:27016`, room: p2pRoom, bsp, mapBytes: bspBytes, read: (p) => fetchGame(p),
+      hello: { name: customize.name, character: customize.char, item: customize.sword, look: customize.look, color: customize.color, options: { gae: !!cvar('bb_gae'), sde: !!cvar('bb_sde'), ibt: cvar('bb_ibt') } },
+      iceServers: params.has('stun') ? [{ urls: params.get('stun') }] : [],
+      input: readInput, onSnapshot, onEvent, onStatus: (s, bad) => { if (s) banner(s, bad ? 8 : 60); },
+    });
+    myId = p2pMatch.myId;
+    window.duelDebug.p2p = p2pMatch;
+  } catch (e) { console.error(e); banner(e.message, 60); }
 }
 let didInitCam = false, frozen = false;
 
@@ -239,8 +264,10 @@ function openPause() { keys.clear(); pulses.length = 0; pauseMenu?.show(true); s
 function closePause() { pauseMenu?.show(false); if (!spectating && document.pointerLockElement !== canvas) lockMouse(); }
 addEventListener('contextmenu', (e) => e.preventDefault());
 let seq = 0;
-setInterval(() => {
-  if (ws?.readyState !== 1 || myId == null) return;
+/**
+ * @returns {number[]} This player's buttons, yaw and pitch right now.
+ */
+function readInput() {
   let b = 0;
   for (const k of keys) b |= COMMAND_BITS[boundTo(k)] ?? 0;
   const nowMs = performance.now();
@@ -250,7 +277,12 @@ setInterval(() => {
   if (window.duelDebug.forceButtons !== undefined) b = window.duelDebug.forceButtons;
   if (window.duelDebug.forceYaw !== undefined) camYaw = window.duelDebug.forceYaw;
   const [aimPitch, aimYaw] = thirdPerson.aim(camView ?? [camPitch, camYaw, 0]);
-  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y: +angleNorm(aimYaw).toFixed(2), p: +aimPitch.toFixed(2), e: snaps.at(-1)?.time }));
+  return [b, +angleNorm(aimYaw).toFixed(2), +aimPitch.toFixed(2)];
+}
+setInterval(() => {
+  if (ws?.readyState !== 1 || myId == null) return;
+  const [b, y, p] = readInput();
+  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y, p, e: snaps.at(-1)?.time }));
 }, 15);
 
 pauseMenu = await createPauseMenu({
@@ -702,7 +734,7 @@ async function tick() {
   const characters = [], tris = [], attached = [];
   let me = null, cur = null;
   if (snaps.length) {
-    const renderTime = now / 1000 + clockOffset.v - 0.05;
+    const renderTime = now / 1000 + clockOffset.v - RENDER_DELAY;
     cur = interpolated(renderTime);
     for (const p of cur.players) {
       if (p.id === myId) me = p;
@@ -815,6 +847,8 @@ function closeCustomize() {
 }
 customize.onCancel(closeCustomize);
 customize.onConfirm(() => {
+  // [I] a fighter's loadout is game state, and changing it mid-match isn't in the peer to peer protocol yet
+  if (started && p2pRoom) { banner('Your loadout can\'t change during a direct match'); closeCustomize(); return; }
   if (started) {
     ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
     if (!spectating) banner('Loadout changes next round');
@@ -827,6 +861,6 @@ customize.onConfirm(() => {
   $('hud').style.display = 'block';
   loadChar(customize.char);
   for (const k of Object.keys(info.characters)) loadChar(k);
-  connect();
+  if (p2pRoom) connectP2P(); else connect();
 });
 if (params.has('auto')) $('go').click();
