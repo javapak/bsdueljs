@@ -2,6 +2,7 @@
 //   [R addr]   recovered from server.dll at addr
 //   [V]        verified port (combat.js, bit-identical to the C++/server.dll tests)
 //   [I]        inferred: plausible behaviour, not yet confirmed against the binary
+import * as DM from './detmath.js';
 import * as C from './combat.js';
 import { actionId, STANCE_KEYS } from './gamedata.js';
 import { angleVectors, add, sub, scale, dot, cross, len, norm, entityMatrix, angleNorm, approachAngle, matPoint } from './mathx.js';
@@ -41,9 +42,9 @@ const BUFFERED_BUTTONS = 0x428807;
  */
 function jumpGravityEase(n, bias, sharpness) {
   const x = n >= bias ? (n - bias) * 0.5 / (1 - bias) + 0.5 : n * 0.5 / bias;
-  const b = (v) => Math.pow(v, Math.log(1 - sharpness) * -1.4427);
+  const b = (v) => DM.pow(v, DM.log(1 - sharpness) * -1.4427);
   const gain = x < 0.5 ? 0.5 * b(2 * x) : 1 - 0.5 * b(2 - 2 * x);
-  return (1 - Math.cos(gain * Math.PI)) * 0.5;
+  return (1 - DM.cos(gain * Math.PI)) * 0.5;
 }
 export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0x200, RIGHT: 0x400, THROW: 0x800, GRAB: 0x20000, WALK: 0x40000, SHUFFLE: 0x400000, BLOCK: 0x800000, STANCE_FAST: 0x2000000, STANCE_BAL: 0x4000000, STANCE_HEAVY: 0x8000000, SHEATHE: 0x8000, FLOURISH: 0x80000, TAUNT: 0x200000, SIT: 0x10000000, BOW: 0x20000000 }; // the game's +bow is 0x2000000, which STANCE_FAST holds here
 // [R 18034ce17] 0x13aa0003, without +spraypaint: any of these, or any move input, stands a sitting fighter up
@@ -159,15 +160,29 @@ export class World {
    * @param {Cvars} o.cvars The cvar table.
    * @param {CharacterStore} o.assets Character models, already preloaded.
    * @param {string} [o.map] Map name.
+   * @param {number} [o.seed] Starts the random numbers, so a match can be replayed. Part of the game's state.
    */
-  constructor({ bsp, data, cvars, assets, map = '' }) {
+  constructor({ bsp, data, cvars, assets, map = '', seed = (Math.random() * 4294967296) >>> 0 }) {
     Object.assign(this, { bsp, data, cv: cvars, assets, map });
     this.time = 0;
+    this.rngState = seed >>> 0;
     this.stars = []; this.nextStar = 1;
     this.tickCount = 0;
     this.players = [];
     this.events = [];
     this.duels = Duel.forMap(this);
+  }
+
+  /**
+   * The sim's only random numbers, from state that rolls back with the rest. Mulberry32: integer steps, the same everywhere.
+   * @returns {number} From 0 up to 1.
+   */
+  random() {
+    this.rngState = (this.rngState + 0x6D2B79F5) >>> 0;
+    let z = this.rngState;
+    z = Math.imul(z ^ (z >>> 15), z | 1);
+    z ^= z + Math.imul(z ^ (z >>> 7), z | 61);
+    return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
   }
 
   /**
@@ -547,19 +562,19 @@ export class World {
     const mins = [HULL_MIN[0] + 3, HULL_MIN[1] + 3, HULL_MAX[2] * 0.5], maxs = [HULL_MAX[0] - 3, HULL_MAX[1] - 3, HULL_MAX[2]];
     const t = this.wallTrace(o, [o[0] + f[0] * 16, o[1] + f[1] * 16, o[2]], mins, maxs);
     if (!t) return !rolling;
-    const l = Math.hypot(t.normal[0], t.normal[1]);
+    const l = DM.hypot(t.normal[0], t.normal[1]);
     if (l < 0.01) return !rolling;
     const n = [t.normal[0] / l, t.normal[1] / l, 0], d = n[0] * r[0] + n[1] * r[1];
     const k = Math.min(1, Math.abs(d) * (1 / 0.9));
-    p.wallAngle = -Math.pow(k, Math.log(0.4) / Math.log(0.5)) * (d >= 0 ? 1 : -1);
+    p.wallAngle = -DM.pow(k, DM.log(0.4) / DM.log(0.5)) * (d >= 0 ? 1 : -1);
     p.wallRuns++;
     p.wallDir = [-n[0], -n[1], 0];
     const na = this.startAction(p, 'WallRun', { force: true });
     if (!na) return false;
     // [R 18034f700] each run after the first plays slower
-    const rate = 1 - Math.pow(Math.max(0, p.wallRuns - 1) * 0.2, Math.log(0.1) / Math.log(0.5));
+    const rate = 1 - DM.pow(Math.max(0, p.wallRuns - 1) * 0.2, DM.log(0.1) / DM.log(0.5));
     na.dur /= rate; na.lock = na.lockDur = na.dur;
-    p.yaw = Math.atan2(n[1], n[0]) * 180 / Math.PI + 180;
+    p.yaw = DM.atan2(n[1], n[0]) * 180 / Math.PI + 180;
     p.onGround = false;
     return true;
   }
@@ -601,7 +616,7 @@ export class World {
    */
   setWall(p, n) {
     p.wallDir = [-n[0], -n[1], -n[2]];
-    p.yaw = Math.atan2(n[1], n[0]) * 180 / Math.PI + 180;
+    p.yaw = DM.atan2(n[1], n[0]) * 180 / Math.PI + 180;
   }
 
   /**
@@ -635,7 +650,7 @@ export class World {
     if (p.buttons & IN.BACK) fm -= this.cv.f('sv_backspeed');
     if (p.buttons & IN.RIGHT) sm += 1;
     if (p.buttons & IN.LEFT) sm -= 1;
-    const l = Math.hypot(fm, sm);
+    const l = DM.hypot(fm, sm);
     if (!l) return [0, 0, 0];
     const s = Math.min(this.cv.f('sv_maxspeed'), l) / l;
     const w = [(f[0] * fm + r[0] * sm) * s, (f[1] * fm + r[1] * sm) * s, (f[2] * fm + r[2] * sm) * s], d = p.wallDir;
@@ -655,7 +670,7 @@ export class World {
     p.wallAngle = ang < 0.4 ? 0 : Math.sign(p.wallAngle);
     this.wallNext(p, 'WallFlip');
     const v = p.vel, cz = v[2] < 0 ? 0 : Math.min(cv.f('bb_walljump_max_inherited_z_velocity'), v[2]);
-    const sp = Math.hypot(v[0], v[1]), keep = sp > 0 ? Math.min(cv.f('bb_walljump_max_inherited_xy_velocity'), sp) / sp : 0;
+    const sp = DM.hypot(v[0], v[1]), keep = sp > 0 ? Math.min(cv.f('bb_walljump_max_inherited_xy_velocity'), sp) / sp : 0;
     const xy = cv.f('bb_walljump_impulse_xy_min') + (cv.f('bb_walljump_impulse_xy_max') - cv.f('bb_walljump_impulse_xy_min')) * late;
     const z = (cv.f('bb_walljump_impulse_z_min') + (cv.f('bb_walljump_impulse_z_max') - cv.f('bb_walljump_impulse_z_min')) * late) * height;
     const d = p.wallDir, w = this.wallInput(p), s = cv.f('bb_walljump_impulse_xy_from_input_scale');
@@ -712,7 +727,7 @@ export class World {
     let best = null;
     for (const q of this.players) {
       if (q === p || !q.alive || q.arena !== p.arena) continue;
-      const c = [q.origin[0], q.origin[1], q.origin[2] + 36], d = sub(c, eye), l = Math.hypot(d[0], d[1], d[2]);
+      const c = [q.origin[0], q.origin[1], q.origin[2] + 36], d = sub(c, eye), l = DM.hypot(d[0], d[1], d[2]);
       if (l > cv.f('bb_throwable_target_distance_max') || !l) continue;
       const n = [d[0] / l, d[1] / l, d[2] / l];
       if (dot(f, n) <= 0) continue;
@@ -741,9 +756,9 @@ export class World {
     const aim = target ? [target.origin[0], target.origin[1], target.origin[2] + 36] : [...aimHit.endpos];
     const world = this.poseWorld(p), att = c.root.attachments.find((x) => x.name === 'anim_attachment_LH');
     const hand = att ? matPoint(world[att.bone], [att.local[3], att.local[7], att.local[11]]) : [p.origin[0], p.origin[1], p.origin[2] + 50];
-    const dist = Math.hypot(aim[0] - hand[0], aim[1] - hand[1], aim[2] - hand[2]), near = Math.max(0, Math.min(1, dist / 512));
+    const dist = DM.hypot(aim[0] - hand[0], aim[1] - hand[1], aim[2] - hand[2]), near = Math.max(0, Math.min(1, dist / 512));
     const spread = near * cv.f('bb_throwable_random_amount');
-    const tgt = [0, 1, 2].map((i) => aim[i] + (Math.random() * 2 - 1) * spread);
+    const tgt = [0, 1, 2].map((i) => aim[i] + (this.random() * 2 - 1) * spread);
     const speed = cv.f('bb_throwable_speed'), arc = near * cv.f(target ? 'bb_throwable_arc_amount_homing' : 'bb_throwable_arc_amount');
     const to = sub(tgt, hand), v = norm([to[0] - to[1] * arc, to[0] * arc + to[1], to[2]]);
     this.stars.push({
@@ -767,8 +782,8 @@ export class World {
       const home = s.homeTotal > 0 ? 1 - s.homeT / s.homeTotal : 1;
       let want = s.aim;
       if (target) {
-        const c = [target.origin[0], target.origin[1], target.origin[2] + 36], l = Math.hypot(target.vel[0], target.vel[1], target.vel[2]);
-        const vel = l > 400 ? scale(target.vel, 400 / l) : target.vel, t = Math.hypot(c[0] - s.pos[0], c[1] - s.pos[1], c[2] - s.pos[2]) / speed;
+        const c = [target.origin[0], target.origin[1], target.origin[2] + 36], l = DM.hypot(target.vel[0], target.vel[1], target.vel[2]);
+        const vel = l > 400 ? scale(target.vel, 400 / l) : target.vel, t = DM.hypot(c[0] - s.pos[0], c[1] - s.pos[1], c[2] - s.pos[2]) / speed;
         const lead = [c[0] + vel[0] * t, c[1] + vel[1] * t, c[2]];
         want = [0, 1, 2].map((i) => s.aim[i] + (lead[i] - s.aim[i]) * home);
       }
@@ -777,7 +792,7 @@ export class World {
       if (ballistic || (s.aimT <= 0 && !target)) dir = cur;
       const delta = sub(dir, cur);
       let next;
-      if (Math.hypot(delta[0], delta[1], delta[2]) < 0.015) { next = dir; s.steering = false; } else {
+      if (DM.hypot(delta[0], delta[1], delta[2]) < 0.015) { next = dir; s.steering = false; } else {
         const rate = Math.min(1, (cv.f('bb_throwable_angular_speed') + (target ? home * cv.f('bb_throwable_angular_speed_homing') : 0)) * TICK);
         next = [cur[0] + delta[0] * rate, cur[1] + delta[1] * rate, cur[2] + delta[2] * rate];
       }
@@ -1283,7 +1298,7 @@ export class World {
     const charging = a?.attack && a.phase === 'charge';
     if (p.buttons & IN.WALK) speed *= cv.f('bb_movement_walkspeed_multiplier');
     let wish = [f0[0] * fm + r0[0] * sm, f0[1] * fm + r0[1] * sm, 0];
-    let wl = Math.hypot(wish[0], wish[1]);
+    let wl = DM.hypot(wish[0], wish[1]);
     let wishSpeed = wl > 0 ? Math.min(wl, 1) * speed : 0;
     // [R 18036f380] charging scales the move input by bb_chargeaccel_dampen
     if (charging && wl > 0) wishSpeed = Math.min(CHARGE_INPUT * wl * cv.f('bb_chargeaccel_dampen'), speed);
@@ -1359,7 +1374,7 @@ export class World {
    */
   friction(p, dt) {
     const v = p.vel;
-    const sp = Math.hypot(v[0], v[1], v[2]);
+    const sp = DM.hypot(v[0], v[1], v[2]);
     if (sp < 0.1) { v[0] = v[1] = v[2] = 0; return; }
     const stop = this.cv.f('sv_stopspeed');
     const control = sp < stop ? stop : sp;
@@ -1388,7 +1403,7 @@ export class World {
       wishSpeed = Math.min(wishSpeed * (p.act.t * cv.f('bb_chargeaccel_charge_multiplier') * run + cv.f('bb_chargeaccel_initialspeed')), cv.f('bb_chargeaccel_maxspeed'));
     }
     // [R 18036d440] the room left to accelerate is measured against total speed, whatever its direction
-    const add_ = wishSpeed - Math.hypot(p.vel[0], p.vel[1], p.vel[2]);
+    const add_ = wishSpeed - DM.hypot(p.vel[0], p.vel[1], p.vel[2]);
     if (add_ <= 0) return;
     const as = Math.min(add_, ac * dt * wishSpeed);
     p.vel[0] += as * wish[0];
@@ -1403,7 +1418,7 @@ export class World {
    * @param {number} dt Seconds.
    */
   airAccelerate(p, wish, wishSpeed, dt) {
-    const drag = Math.pow(num(p.act?.def?.air_drag_scale, this.cv.f('bb_air_drag')), dt * 64);
+    const drag = DM.pow(num(p.act?.def?.air_drag_scale, this.cv.f('bb_air_drag')), dt * 64);
     p.vel[0] *= drag;
     p.vel[1] *= drag;
     const capped = Math.min(wishSpeed, 30);
@@ -1467,7 +1482,7 @@ export class World {
    */
   walkMove(p, dt) {
     const v = p.vel;
-    if (Math.hypot(v[0], v[1]) < 1) { v[0] = v[1] = 0; return; }
+    if (DM.hypot(v[0], v[1]) < 1) { v[0] = v[1] = 0; return; }
     const o = p.origin, dest = [o[0] + v[0] * dt, o[1] + v[1] * dt, o[2]];
     const t0 = this.trace(o, dest);
     if (t0.fraction === 1) { p.origin = t0.endpos; return; }
@@ -1540,7 +1555,7 @@ export class World {
         if (a && p.isSwinging() && a.airMove && a.def.landing && !a.touchedDown) {
           a.touchedDown = true;
           const mx = this.cv.f('bb_air_max_land_momentum');
-          const s = Math.hypot(p.vel[0], p.vel[1]);
+          const s = DM.hypot(p.vel[0], p.vel[1]);
           if (s > mx) { p.vel[0] *= mx / s; p.vel[1] *= mx / s; }
           a.lock = a.lockDur = num(a.tierDef.land_lock_duration, 0.5); // [R 1803462f0]
           if (this.seqInfo(p, a.def.landing).seq) p.touchdown = { anim: a.def.landing, t: a.lock, total: a.lock, weight: 0 };
@@ -1570,7 +1585,7 @@ export class World {
         if (a.arena !== b.arena) continue;
         const dx = a.origin[0] - b.origin[0], dy = a.origin[1] - b.origin[1];
         const dz = Math.abs(a.origin[2] - b.origin[2]);
-        const d = Math.hypot(dx, dy);
+        const d = DM.hypot(dx, dy);
         if (d >= 26 || dz > 72) continue;
         const nx = d > 0.01 ? dx / d : 1, ny = d > 0.01 ? dy / d : 0;
         const str = this.cv.f('bb_player_softcollision_strengthNormal') * (1 - d / 26) * TICK;
@@ -1592,12 +1607,12 @@ export class World {
     const c = this.char(p), a = p.act, cv = this.cv;
     let mx = 0, my = 0;
     if (Math.abs(p.vel[0]) >= 0.01 || Math.abs(p.vel[1]) >= 0.01) {
-      const l = Math.hypot(p.vel[0], p.vel[1]), vx = p.vel[0] / l, vy = p.vel[1] / l;
-      const y = p.yaw * Math.PI / 180, cy = Math.cos(y), sy = Math.sin(y);
+      const l = DM.hypot(p.vel[0], p.vel[1]), vx = p.vel[0] / l, vy = p.vel[1] / l;
+      const y = p.yaw * Math.PI / 180, cy = DM.cos(y), sy = DM.sin(y);
       const fwd = vx * cy + vy * sy, right = vx * sy - vy * cy;
       // the corners of the blend square need a longer vector to reach it
-      const deg = ((Math.atan2(right, fwd) * 180 / Math.PI) % 90 + 90) % 90;
-      const k = 1 + 0.41421 * Math.max(0, Math.min(1, (Math.sin(0.7854 - Math.abs(deg - 45) * 0.01745 + 1.5708) - 1) * -3.41423));
+      const deg = ((DM.atan2(right, fwd) * 180 / Math.PI) % 90 + 90) % 90;
+      const k = 1 + 0.41421 * Math.max(0, Math.min(1, (DM.sin(0.7854 - Math.abs(deg - 45) * 0.01745 + 1.5708) - 1) * -3.41423));
       mx = Math.max(-1, Math.min(1, fwd * k));
       my = Math.max(-1, Math.min(1, right * k));
     }
@@ -1779,7 +1794,7 @@ export class World {
     const [a0, a1] = seg(a, ra), [b0, b1] = seg(b, rb);
     const close = closestOnSegments(a0, a1, b0, b1);
     if (!close) return false;
-    return Math.hypot(close[0][0] - close[1][0], close[0][1] - close[1][1], close[0][2] - close[1][2]) < Math.max(ra, rb);
+    return DM.hypot(close[0][0] - close[1][0], close[0][1] - close[1][1], close[0][2] - close[1][2]) < Math.max(ra, rb);
   }
 
   /**
@@ -2080,7 +2095,7 @@ export class World {
     const d = norm(to), start = [p.origin[0] + d[0] * 28, p.origin[1] + d[1] * 28, p.origin[2] + 40];
     const t = this.trace(start, [start[0], start[1], start[2] - 80]);
     if (!t.allsolid && t.fraction < 1) v.origin = [...t.endpos];
-    const yaw = Math.atan2(d[1], d[0]) * 180 / Math.PI;
+    const yaw = DM.atan2(d[1], d[0]) * 180 / Math.PI;
     p.yaw = yaw;
     v.yaw = angleNorm(yaw + 180);
     p.vel = [0, 0, 0];
@@ -2147,7 +2162,7 @@ export class World {
    */
   locomotion(p) {
     const a = p.act, st = this.data.stanceFor(p.character, a?.attack ? a.stanceType : p.stance) || {};
-    const speed = Math.hypot(p.vel[0], p.vel[1]);
+    const speed = DM.hypot(p.vel[0], p.vel[1]);
     const moving = speed > 0.5;
     // [R 18037e790, 180379da0] walking: slow move input, or any defensive action
     const defending = a?.kind === 'block' || a?.kind === 'parry' || a?.kind === 'guard';
@@ -2243,17 +2258,17 @@ export class World {
     let mx = 0, my = 0;
     if (!p.onGround) {
       // [R 18037e890] in the air: direction of travel, scaled by total speed over 100
-      const th = (Math.atan2(p.vel[1], p.vel[0]) * 180 / Math.PI - p.yaw) * Math.PI / 180;
-      const f = moving ? Math.min(1, Math.hypot(p.vel[0], p.vel[1], p.vel[2]) * 0.01) : 0;
-      mx = Math.cos(th) * f;
-      my = -Math.sin(th) * f;
+      const th = (DM.atan2(p.vel[1], p.vel[0]) * 180 / Math.PI - p.yaw) * Math.PI / 180;
+      const f = moving ? Math.min(1, DM.hypot(p.vel[0], p.vel[1], p.vel[2]) * 0.01) : 0;
+      mx = DM.cos(th) * f;
+      my = -DM.sin(th) * f;
     } else if (moving) {
-      const th = angleNorm(Math.atan2(p.vel[1], p.vel[0]) * 180 / Math.PI - p.yaw);
+      const th = angleNorm(DM.atan2(p.vel[1], p.vel[0]) * 180 / Math.PI - p.yaw);
       const u = Math.abs(th) % 90;
-      const v = Math.sin(Math.PI / 4 - Math.abs(u - 45) * Math.PI / 180 + Math.PI / 2);
+      const v = DM.sin(Math.PI / 4 - Math.abs(u - 45) * Math.PI / 180 + Math.PI / 2);
       const sc = 1 + 0.41421 * Math.max(0, Math.min(1, (v - 1) * -3.41423));
-      mx = Math.cos(th * Math.PI / 180) * rate * sc;
-      my = -Math.sin(th * Math.PI / 180) * rate * sc;
+      mx = DM.cos(th * Math.PI / 180) * rate * sc;
+      my = -DM.sin(th * Math.PI / 180) * rate * sc;
     }
     let baseCycle = p.moveCycle, upper = null, upperCycle = 0;
     if (a && !(a.attack && a.phase === 'charge')) {
@@ -2322,7 +2337,7 @@ const fnum = (v) => (v === undefined || v === null ? null : Math.fround(typeof v
 const fnumOpt = fnum;
 const inum = (v) => (v === undefined || v === null ? null : parseInt(v, 10));
 
-const normOr = (a) => { const l = Math.hypot(a[0], a[1], a[2]); return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; };
+const normOr = (a) => { const l = DM.hypot(a[0], a[1], a[2]); return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; };
 /**
  * [R 1803880a0] Closest points of the two lines, each then clamped into its segment's bounds. Null if near parallel or too short.
  * @param {number[]} p1 First segment's start.

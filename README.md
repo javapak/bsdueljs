@@ -30,6 +30,7 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 
 | path | what |
 |---|---|
+| `shared/detmath.js` | math that gives the same bits in every JS engine, used by everything the sim computes |
 | `shared/combat.js` | port of a separate C++ rewrite of the combat rules, which isn't in this repo; bit-identical to it |
 | `shared/sim.js` | movement, action state machine, sword tracers, duel rounds |
 | `shared/bsp.js`, `mdl.js`, `kv.js`, `gamedata.js` | game file formats and script loading |
@@ -58,6 +59,8 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `node tests/preview_check.mjs "<install>"` | the attack preview: the attack it names, its path, fades and target highlight |
 | `node tests/wall_check.mjs "<install>"` | wall run, slide, wall jump and run limit, plus throwables: timing, hits, blocks, cancel and delay |
 | `node tests/options_check.mjs "<install>"` | the per-fighter input options: double tap shuffle, attack + block grab, and the input buffer |
+| `node tests/detmath_check.mjs` | `shared/detmath.js` stays within 1-3 units in the last place of the engine's own functions, special values included, and uses only what IEEE 754 defines |
+| `node tests/determinism_check.mjs "<install>"` | seeded fights replay identically in Node, Chrome and Firefox: the whole game state, bit for bit, every eighth tick. Names the first field that differs. What rollback rests on |
 | `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
 | `node tests/net_check.mjs "<install>"` | full match between two real WebSocket clients; path traversal rejected |

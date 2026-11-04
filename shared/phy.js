@@ -1,4 +1,5 @@
 // Static prop collision: the convex pieces in a model's .phy (Havok/IVP compact surfaces), turned into plane lists.
+import * as DM from './detmath.js';
 const IVP_TO_SOURCE = 1 / 0.0254;
 
 /**
@@ -53,7 +54,7 @@ export function parseConvexPieces(bytes) {
  */
 export function propMatrix(o, a) {
   const D = Math.PI / 180;
-  const sy = Math.sin(a[1] * D), cy = Math.cos(a[1] * D), sp = Math.sin(a[0] * D), cp = Math.cos(a[0] * D), sr = Math.sin(a[2] * D), cr = Math.cos(a[2] * D);
+  const sy = DM.sin(a[1] * D), cy = DM.cos(a[1] * D), sp = DM.sin(a[0] * D), cp = DM.cos(a[0] * D), sr = DM.sin(a[2] * D), cr = DM.cos(a[2] * D);
   return [cp * cy, sp * sr * cy - cr * sy, sp * cr * cy + sr * sy, o[0], cp * sy, sp * sr * sy + cr * cy, sp * cr * sy - sr * cy, o[1], -sp, sr * cp, cr * cp, o[2]];
 }
 
@@ -77,7 +78,7 @@ export function placePiece(piece, m) {
     const a = pts[ia], b = pts[ib], c = pts[ic];
     const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-    const l = Math.hypot(n[0], n[1], n[2]);
+    const l = DM.hypot(n[0], n[1], n[2]);
     if (l < 1e-6) continue;
     n = [n[0] / l, n[1] / l, n[2] / l];
     let d = n[0] * a[0] + n[1] * a[1] + n[2] * a[2];

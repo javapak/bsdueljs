@@ -1,6 +1,7 @@
 // JS port of rewrite/combat/combat_rules.cpp. All arithmetic is single precision (Math.fround),
 // in the C++ operation order, so results match bit for bit (tests/combat_diff.mjs checks this
 // against the native build, which is itself verified against server.dll).
+import * as DM from './detmath.js';
 const fr = Math.fround;
 export const HIT_LANDED = 0, HIT_BLOCKED = 1, HIT_INTERCEPTED = 2, HIT_GUARD_BROKEN = 5;
 export const TIER_1 = 0, TIER_2 = 1, TIER_3 = 2;
@@ -232,7 +233,7 @@ function floorLikeOriginal(x) {
  * @param {function(number, number): number} [pow] Single precision power function.
  * @returns {number} The damage, 0 if not attacking.
  */
-export function computeAttackDamage(i, globalScale, pow = (b, e) => fr(Math.pow(b, e))) {
+export function computeAttackDamage(i, globalScale, pow = (b, e) => fr(DM.pow(b, e))) {
   if (!i.attackerInAttackAction) return 0;
   const sw = i.sword;
   const tierDamage = fr(i.tierDamage);

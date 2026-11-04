@@ -1,4 +1,5 @@
 // VBSP v21 parser and CM-style box tracing (world brushes + displacements).
+import * as DM from './detmath.js';
 import { parseKV } from './kv.js';
 
 export const CONTENTS_SOLID = 1, CONTENTS_WINDOW = 2, CONTENTS_GRATE = 8, CONTENTS_MOVEABLE = 0x4000,
@@ -293,7 +294,7 @@ export class BSP {
   _addTri(a, b, c, fn) {
     const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let n = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
-    const l = Math.hypot(n[0], n[1], n[2]);
+    const l = DM.hypot(n[0], n[1], n[2]);
     if (l < 1e-5) return;
     n = [n[0] / l, n[1] / l, n[2] / l];
     if (n[0] * fn[0] + n[1] * fn[1] + n[2] * fn[2] < 0) { n = [-n[0], -n[1], -n[2]]; const t = b; b = c; c = t; }
@@ -304,7 +305,7 @@ export class BSP {
       const p = pts[i], q = pts[(i + 1) % 3];
       const e = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
       let s = [e[1] * n[2] - e[2] * n[1], e[2] * n[0] - e[0] * n[2], e[0] * n[1] - e[1] * n[0]];
-      const sl = Math.hypot(s[0], s[1], s[2]);
+      const sl = DM.hypot(s[0], s[1], s[2]);
       if (sl < 1e-5) continue;
       s = [s[0] / sl, s[1] / sl, s[2] / sl];
       planes.push({ n: s, d: s[0] * p[0] + s[1] * p[1] + s[2] * p[2] });

@@ -1,5 +1,6 @@
 // Vectors are plain arrays [x,y,z]; quaternions [x,y,z,w];
 // matrices are Source matrix3x4 stored as 12 floats by rows (m[3],m[7],m[11] = translation).
+import * as DM from './detmath.js';
 export const DEG = Math.PI / 180;
 export const v3 = (x = 0, y = 0, z = 0) => [x, y, z];
 export const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -7,8 +8,8 @@ export const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 export const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 export const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 export const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-export const len = (a) => Math.hypot(a[0], a[1], a[2]);
-export const len2d = (a) => Math.hypot(a[0], a[1]);
+export const len = (a) => DM.hypot(a[0], a[1], a[2]);
+export const len2d = (a) => DM.hypot(a[0], a[1]);
 export const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 export const norm = (a) => { const l = len(a); return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; };
 /**
@@ -42,9 +43,9 @@ export const angleDiff = (a, b) => angleNorm(a - b);
  * @returns {{forward: number[], right: number[], up: number[]}} Unit vectors.
  */
 export function angleVectors(ang) {
-  const sy = Math.sin(ang[1] * DEG), cy = Math.cos(ang[1] * DEG);
-  const sp = Math.sin(ang[0] * DEG), cp = Math.cos(ang[0] * DEG);
-  const sr = Math.sin((ang[2] || 0) * DEG), cr = Math.cos((ang[2] || 0) * DEG);
+  const sy = DM.sin(ang[1] * DEG), cy = DM.cos(ang[1] * DEG);
+  const sp = DM.sin(ang[0] * DEG), cp = DM.cos(ang[0] * DEG);
+  const sr = DM.sin((ang[2] || 0) * DEG), cr = DM.cos((ang[2] || 0) * DEG);
   return {
     forward: [cp * cy, cp * sy, -sp],
     right: [-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp],
@@ -60,9 +61,9 @@ export function angleVectors(ang) {
  * @returns {number[]} Quaternion [x, y, z, w].
  */
 export function eulerToQuat(x, y, z) {
-  const sr = Math.sin(x * 0.5), cr = Math.cos(x * 0.5);
-  const sp = Math.sin(y * 0.5), cp = Math.cos(y * 0.5);
-  const sy = Math.sin(z * 0.5), cy = Math.cos(z * 0.5);
+  const sr = DM.sin(x * 0.5), cr = DM.cos(x * 0.5);
+  const sp = DM.sin(y * 0.5), cp = DM.cos(y * 0.5);
+  const sy = DM.sin(z * 0.5), cy = DM.cos(z * 0.5);
   const srXcp = sr * cp, crXsp = cr * sp, crXcp = cr * cp, srXsp = sr * sp;
   return [srXcp * cy - crXsp * sy, crXsp * cy + srXcp * sy, crXcp * sy - srXsp * cy, crXcp * cy + srXsp * sy];
 }
@@ -81,11 +82,11 @@ export function quatSlerp(p, q, t) {
   d *= s;
   let a, b;
   if (d > 0.9995) { a = 1 - t; b = t; } else {
-    const o = Math.acos(d), so = Math.sin(o);
-    a = Math.sin((1 - t) * o) / so; b = Math.sin(t * o) / so;
+    const o = DM.acos(d), so = DM.sin(o);
+    a = DM.sin((1 - t) * o) / so; b = DM.sin(t * o) / so;
   }
   const r = [a * p[0] + b * s * q[0], a * p[1] + b * s * q[1], a * p[2] + b * s * q[2], a * p[3] + b * s * q[3]];
-  const l = Math.hypot(r[0], r[1], r[2], r[3]) || 1;
+  const l = DM.hypot(r[0], r[1], r[2], r[3]) || 1;
   return [r[0] / l, r[1] / l, r[2] / l, r[3] / l];
 }
 

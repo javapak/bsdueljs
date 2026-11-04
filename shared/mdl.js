@@ -1,5 +1,6 @@
 // Source MDL v48/49 + VVD + VTX readers, and bone setup from sequences.
 // Follows public studio.h layouts; checked against the shipped files by tests/mdl_check.mjs.
+import * as DM from './detmath.js';
 import { cstr } from './bsp.js';
 import { eulerToQuat, quatSlerp, quatMatrix, matMul, matPoint } from './mathx.js';
 
@@ -638,7 +639,7 @@ export class Character {
     const out = new Array(this.bones.length);
     this._spine ??= ['valvebiped.bip01_spine', 'valvebiped.bip01_spine1', 'valvebiped.bip01_spine2'].map((n) => this.root.boneByName.get(n));
     const spineOk = aim && aim.pitch !== 0 && this._spine.every((i) => i !== undefined);
-    const y = aim ? aim.yaw * Math.PI / 180 : 0, right = [Math.sin(y), -Math.cos(y), 0];
+    const y = aim ? aim.yaw * Math.PI / 180 : 0, right = [DM.sin(y), -DM.cos(y), 0];
     for (let i = 0; i < this.bones.length; i++) {
       const b = this.bones[i];
       const local = quatMatrix(pose.Q[i], pose.P[i]);
@@ -675,8 +676,8 @@ const SPINE_AIM = [0.5, 0.3, 0.2];
  * @returns {number[]} 3x4 rotation.
  */
 function axisAngleMatrix(v, degrees) {
-  const l = Math.hypot(v[0], v[1], v[2]) || 1, x = v[0] / l, y = v[1] / l, z = v[2] / l;
-  const r = degrees * Math.PI / 180, s = Math.sin(r), c = Math.cos(r), t = 1 - c;
+  const l = DM.hypot(v[0], v[1], v[2]) || 1, x = v[0] / l, y = v[1] / l, z = v[2] / l;
+  const r = degrees * Math.PI / 180, s = DM.sin(r), c = DM.cos(r), t = 1 - c;
   return [x * x * t + c, x * y * t - z * s, x * z * t + y * s, 0, y * x * t + z * s, y * y * t + c, y * z * t - x * s, 0, z * x * t - y * s, z * y * t + x * s, z * z * t + c, 0];
 }
 
