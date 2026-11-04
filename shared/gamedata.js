@@ -127,6 +127,10 @@ export class GameData {
     const english = await text('resource/basemodui_english.txt').then((t) => t.replace(/\0/g, ''), () => '');
     const say = (key) => new RegExp(`"${String(key).replace('#', '')}"\\s+"([^"]*)"`, 'i').exec(english)?.[1] ?? null;
     for (const [k, v] of Object.entries(d.characters)) d.charText[k] = say(v.description);
+    // arena names, by their token in lower case
+    d.arenaNames = {};
+    const arenaText = await text('resource/maparena_english.txt').then((t) => t.replace(/\0/g, ''), () => '');
+    for (const m of arenaText.matchAll(/"(bb_arena_\w+)"\s+"([^"]*)"/gi)) d.arenaNames[m[1].toLowerCase()] = m[2];
     // throwables, with "extends" resolved
     d.throwables = {};
     const tt = kvFind(parseKV(await text('scripts/throwabletypes.txt')), 'throwabletypes');

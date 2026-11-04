@@ -8,7 +8,7 @@ const TABS = ['cape', 'mask', 'skin', 'color', 'emblems', 'misc'];
 const MISC = [['chest', 161], ['arms', 217], ['back', 273], ['legs', 329]];
 const SINGLE = { cape: 'cape', mask: 'mask', skin: 'skin', color: 'colour', emblems: 'emblem' };
 const STORE = 'bsduel.loadout';
-const KEYS = `<kbd>WASD</kbd> move, aim sets attack direction &middot; <kbd>Mouse1</kbd> attack (hold to charge) &middot; <kbd>Mouse2</kbd> block &middot; <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> fast / balanced / heavy &middot; <kbd>Space</kbd> jump &middot; <kbd>E</kbd> throw &middot; <kbd>Ctrl</kbd> roll &middot; <kbd>Shift</kbd> shuffle &middot; <kbd>Q</kbd> grab (press while grabbed to break) &middot; <kbd>Alt</kbd> walk &middot; <kbd>M</kbd> customize`;
+const KEYS = `<kbd>WASD</kbd> move, aim sets attack direction &middot; <kbd>Mouse1</kbd> attack (hold to charge) &middot; <kbd>Mouse2</kbd> block &middot; <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> fast / balanced / heavy &middot; <kbd>Space</kbd> jump &middot; <kbd>E</kbd> throw &middot; <kbd>Ctrl</kbd> roll &middot; <kbd>Shift</kbd> shuffle &middot; <kbd>Q</kbd> grab (press while grabbed to break) &middot; <kbd>Alt</kbd> walk &middot; <kbd>R</kbd> join or leave the queue &middot; hold <kbd>Tab</kbd> arenas &middot; <kbd>M</kbd> customize`;
 
 const CSS = `
 #cz{position:fixed;inset:0;z-index:5;--u:calc(100vh / 480);font-family:Harabara,sans-serif;color:#fff;pointer-events:none;overflow:hidden;user-select:none}

@@ -40,6 +40,7 @@ export class Player {
     Object.assign(this, { id, name, character, isBot: false, connected: true });
     this.score = 0;
     this.stance = 0;
+    this.arena = 0;
     this.reset([0, 0, 0], 0);
   }
 
@@ -74,18 +75,21 @@ export class World {
     this.tickCount = 0;
     this.players = [];
     this.events = [];
-    this.duel = new Duel(this);
+    this.duels = Duel.forMap(this);
   }
+
+  get duel() { return this.duels[0]; }
 
   emit(e) { this.events.push({ ...e, time: this.time }); }
   player(id) { return this.players.find((p) => p.id === id); }
 
-  addPlayer(p) { this.players.push(p); this.duel.onPlayersChanged(); }
-  removePlayer(id) { this.players = this.players.filter((p) => p.id !== id); this.duel.onPlayersChanged(); }
+  // Into an arena's queue; a fighter is only in the world while that arena has them playing
+  addPlayer(p, arena = 0) { this.duels[arena].enqueue(p); }
+  removePlayer(id) { for (const d of this.duels) d.drop(id); this.players = this.players.filter((p) => p.id !== id); }
 
   step() {
     this.time += TICK; this.tickCount++;
-    this.duel.update();
+    for (const d of this.duels) d.update();
     for (const p of this.players) { if (p.isBot && p.brain) p.brain(p, this); }
     for (const p of this.players) this.tickPlayer(p);
     this.updateStars();
@@ -398,7 +402,7 @@ export class World {
     const { forward: f, right: r, up: u } = angleVectors([p.pitch, p.viewYaw, 0]);
     let best = null;
     for (const q of this.players) {
-      if (q === p || !q.alive) continue;
+      if (q === p || !q.alive || q.arena !== p.arena) continue;
       const c = [q.origin[0], q.origin[1], q.origin[2] + 36], d = sub(c, eye), l = Math.hypot(d[0], d[1], d[2]);
       if (l > cv.f('bb_throwable_target_distance_max') || !l) continue;
       const n = [d[0] / l, d[1] / l, d[2] / l];
@@ -430,7 +434,7 @@ export class World {
     const speed = cv.f('bb_throwable_speed'), arc = near * cv.f(target ? 'bb_throwable_arc_amount_homing' : 'bb_throwable_arc_amount');
     const to = sub(tgt, hand), v = norm([to[0] - to[1] * arc, to[0] * arc + to[1], to[2]]);
     this.stars.push({
-      id: this.nextStar++, owner: p.id, type: this.data.characters[p.character].throwableweapon, pos: hand, vel: scale(v, speed), target: target?.id ?? null, aim: tgt,
+      id: this.nextStar++, owner: p.id, arena: p.arena, type: this.data.characters[p.character].throwableweapon, pos: hand, vel: scale(v, speed), target: target?.id ?? null, aim: tgt,
       aimT: dist / speed * 0.9, homeT: Math.max(0, dist - 128) * (1 / 9000) + 0.2, homeTotal: Math.max(0, dist - 128) * (1 / 9000) + 0.2, steering: true, life: cv.f('bb_throwable_life_duration'),
     });
     this.emit({ type: 'star_throw', id: p.id, star: this.nextStar - 1, kind: this.stars.at(-1).type, pos: hand });
@@ -478,7 +482,7 @@ export class World {
   starHitsPlayer(s, end, limit) {
     const R = 8;
     for (const q of this.players) {
-      if (q.id === s.owner || !q.alive) continue;
+      if (q.id === s.owner || !q.alive || q.arena !== s.arena) continue;
       const mn = [q.origin[0] + HULL_MIN[0] - R, q.origin[1] + HULL_MIN[1] - R, q.origin[2] + HULL_MIN[2] - R], mx = [q.origin[0] + HULL_MAX[0] + R, q.origin[1] + HULL_MAX[1] + R, q.origin[2] + HULL_MAX[2] + R];
       let t0 = 0, t1 = limit, inside = true;
       for (let i = 0; i < 3 && inside; i++) {
@@ -658,14 +662,31 @@ export class World {
     }
   }
 
+  // How far the attack being charged has come
+  chargedTier(p) {
+    const cv = this.cv, mult = num(this.sword(p).chargetime, 1), held = p.act.t;
+    if (held >= cv.f('bb_charge_tier3_time') * mult) return 2;
+    return held >= cv.f('bb_charge_tier2_time') * mult ? 1 : 0;
+  }
+
+  // [R client 1802ba0d0] What the attack preview shows: the swing under way, what the charge would release, or with no
+  // attack going, the first tier of what the stance, keys and string would start. Nothing while kneeling.
+  // [I] the string restarting after bb_string_reset_time counts here too, as it will once the attack starts.
+  previewAttack(p) {
+    if (p.kneeling) return null;
+    const a = p.act;
+    let def, tier = 0;
+    if (a?.attack) { def = a.def; tier = a.phase === 'swing' ? a.tier : this.chargedTier(p); }
+    else def = this.data.attackFor(p.character, this.stanceNow(p), this.moveDir(p), this.time - p.comboIdxTime > this.cv.f('bb_string_reset_time') ? 0 : p.comboIdx);
+    const t = def?.['tier' + (tier + 1)] ?? def?.tier1;
+    return t?.animation ? { a: t.animation, l: t.animation_lowerbody } : null;
+  }
+
   // [R 180346a70] release: tier from elapsed charge, animation/lock from the tierN block; lock <= seq + 0.2
   releaseAttack(p, forceTier) {
     const a = p.act, cv = this.cv;
     const mult = num(this.sword(p).chargetime, 1);
-    const held = a.t;
-    let tier = 0;
-    if (held >= cv.f('bb_charge_tier3_time') * mult) tier = 2; else if (held >= cv.f('bb_charge_tier2_time') * mult) tier = 1;
-    if (forceTier !== undefined) tier = forceTier;
+    const tier = forceTier ?? this.chargedTier(p);
     const tierDef = a.def['tier' + (tier + 1)] || a.def.tier1 || {};
     const anim = tierDef.animation;
     const { seq, dur } = this.seqInfo(p, anim);
@@ -998,6 +1019,7 @@ export class World {
     for (let i = 0; i < P.length; i++) {
       for (let j = i + 1; j < P.length; j++) {
         const a = P[i], b = P[j];
+        if (a.arena !== b.arena) continue;
         const dx = a.origin[0] - b.origin[0], dy = a.origin[1] - b.origin[1];
         const dz = Math.abs(a.origin[2] - b.origin[2]);
         const d = Math.hypot(dx, dy);
@@ -1111,7 +1133,7 @@ export class World {
   findGuard(p) {
     const ring = p.act.bladeRing, cv = this.cv;
     for (const q of this.players) {
-      if (q === p || !q.alive || q.act?.id !== 2 || !q.act.seq) continue;
+      if (q === p || !q.alive || q.arena !== p.arena || q.act?.id !== 2 || !q.act.seq) continue;
       const d = sub(p.origin, q.origin);
       if (dot(d, d) > 90000) continue;
       const c = this.char(q);
@@ -1148,7 +1170,7 @@ export class World {
   findClash(p) {
     const mine = p.act.bladeRing;
     for (const q of this.players) {
-      if (q === p || !q.alive || !q.isSwinging() || !q.act.bladeRing?.length || q.act.trDone) continue;
+      if (q === p || !q.alive || q.arena !== p.arena || !q.isSwinging() || !q.act.bladeRing?.length || q.act.trDone) continue;
       const d = sub(p.origin, q.origin);
       if (dot(d, d) > 90000) continue;
       const theirs = q.act.bladeRing;
@@ -1254,7 +1276,7 @@ export class World {
   bladeTrace(p, from, to, w, thick) {
     const reach = w.startsolid ? 1 : w.fraction;
     for (const v of this.players) {
-      if (v === p || !v.alive) continue;
+      if (v === p || !v.alive || v.arena !== p.arena) continue;
       const t = segHitT(from, to, add(v.origin, HULL_MIN), add(v.origin, HULL_MAX), thick);
       if (t < 0 || t > reach) continue;
       // [R 180372f47] a fighter in this action can't be hit
@@ -1386,7 +1408,7 @@ export class World {
     let best = null, range = this.cv.f('bb_grab_range'), minDot = this.cv.f('bb_grab_dot');
     const { forward: f } = angleVectors([0, p.yaw, 0]);
     for (const v of this.players) {
-      if (v === p || !v.alive) continue;
+      if (v === p || !v.alive || v.arena !== p.arena) continue;
       const to = sub(v.origin, p.origin);
       if (Math.abs(to[2]) > HULL_MAX[2] * 0.5) continue;
       to[2] = 0;
@@ -1448,7 +1470,7 @@ export class World {
     v.health = 0;
     this.startAction(v, 'Kill', { force: true, lock: 1e9, extra: { kind: 'kill' } });
     this.emit({ type: 'death', victim: v.id, attacker: att?.id });
-    this.duel.onDeath(v, att);
+    this.duels[v.arena].onDeath(v, att);
   }
 
   // Animation state, shared by the client and server hitboxes. Mirrors CBerimbauPlayerAnimState.
@@ -1637,29 +1659,67 @@ export function segSegDist(p1, q1, p2, q2) {
 
 // ---------------------------------------------------------------------- duel (CBerimbauDuel)
 // [R 18032c4c0, 18032d420, 18032df30] best of vs_duel_rounds; frozen warmup, fight, intermission, cooldown.
+// One per berimbau_duel: its own queue, match and spawns, side by side on the map.
+// [R server.dll 18031ea20, 18031e37b, 18032df30, 180329070] The queue is everyone in the arena in order, fighters included.
+// A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to
+// the back, and after the cooldown the front two play.
 export class Duel {
-  constructor(world) {
+  // Arenas with both team's spawns, in name order. A map without any gets one over all its spawns.
+  static forMap(w) {
+    const b = w.bsp;
+    const spawns = b.entities.filter((e) => e.classname === 'berimbau_spawn' && e.origin);
+    const ok = (e) => spawns.some((s) => s.duel === e.targetname && s.duelteam === '1') && spawns.some((s) => s.duel === e.targetname && s.duelteam === '2');
+    const ents = b.entities.filter((e) => e.classname === 'berimbau_duel').filter(ok).sort((x, y) => String(x.targetname).localeCompare(String(y.targetname)));
+    return (ents.length ? ents : [null]).map((e, i) => new Duel(w, i, e));
+  }
+
+  constructor(world, index = 0, ent = null) {
     this.w = world;
+    this.index = index;
+    this.ent = ent;
+    this.name = world.data?.arenaNames?.[String(ent?.arena ?? '').replace('#', '').toLowerCase()] ?? ent?.webarena ?? ent?.arena ?? 'Unnamed Arena';
+    this.queue = [];
     this.state = 'waiting';
     this.timer = 0; this.round = 0; this.wins = {}; this.results = []; this.fighters = []; this.winner = null; this.last = null;
     this.arena = null;
   }
 
-  spawns() {
-    const b = this.w.bsp;
-    const all = b.entities.filter((e) => e.classname === 'berimbau_spawn');
-    const duels = b.entities.filter((e) => e.classname === 'berimbau_duel');
-    return { all, duels };
+  emit(e) { this.w.emit({ ...e, arena: this.index }); }
+
+  // [R 18031e190] bb_queue_bot_discrimination: a person waiting doesn't wait behind a bot
+  enqueue(p) {
+    if (this.queue.includes(p)) return;
+    p.arena = this.index;
+    p.unready = false;
+    this.queue.push(p);
+    if (!p.isBot && this.fighters.some((id) => this.w.player(id)?.isBot)) this.abort();
+    else this.refill();
   }
 
-  onPlayersChanged() {
-    const P = this.w.players;
-    if (this.state === 'waiting' && P.length >= 2) this.beginMatch();
-    else if (this.state !== 'waiting' && this.fighters.some((id) => !P.find((p) => p.id === id))) {
-      this.state = 'waiting'; this.fighters = [];
-      this.w.emit({ type: 'duel_aborted' });
-      if (P.length >= 2) this.beginMatch(); else for (const p of P) { p.frozen = false; }
-    } else if (P.length === 1) this.placeSolo(P[0]);
+  drop(id) {
+    const p = this.queue.find((q) => q.id === id);
+    if (!p) return;
+    this.queue = this.queue.filter((q) => q !== p);
+    const playing = this.fighters.includes(id);
+    this.w.players = this.w.players.filter((q) => q !== p);
+    if (playing) this.abort(); else this.refill();
+  }
+
+  abort() {
+    this.state = 'waiting'; this.fighters = [];
+    this.emit({ type: 'duel_aborted' });
+    this.refill();
+  }
+
+  // Waiting: the front two play. One alone has the arena to themselves; nobody else in the arena stays in the world.
+  refill() {
+    if (this.state !== 'waiting') return;
+    this.queue.sort((a, b) => (a.isBot ? 1 : 0) - (b.isBot ? 1 : 0));
+    const front = this.queue.slice(0, 2);
+    this.w.players = this.w.players.filter((q) => q.arena !== this.index || front.includes(q));
+    for (const p of front) if (!this.w.players.includes(p)) this.w.players.push(p);
+    if (front.length === 2) this.beginMatch(front);
+    else if (front.length === 1) this.placeSolo(front[0]);
   }
 
   placeSolo(p) {
@@ -1673,9 +1733,9 @@ export class Duel {
     const b = this.w.bsp;
     const parse = (e) => ({ o: e.origin.split(' ').map(Number), yaw: parseFloat((e.angles || '0 0 0').split(' ')[1]), e });
     const list = b.entities.filter((e) => e.classname === 'berimbau_spawn' && e.origin).map(parse);
-    const arenas = b.entities.filter((e) => e.classname === 'berimbau_duel').map((e) => e.targetname);
     const clear = (o) => !b.traceBox([o[0], o[1], o[2] + 2], [o[0], o[1], o[2] + 2], HULL_MIN, HULL_MAX).startsolid;
-    for (const ar of [...arenas].sort()) {
+    if (this.ent) {
+      const ar = this.ent.targetname;
       const team = (t) => list.filter((s) => s.e.duel === ar && s.e.duelteam === String(t)).sort((x, y) => (x.e.spawnid | 0) - (y.e.spawnid | 0)).find((s) => clear(s.o));
       const t1 = team(1), t2 = team(2);
       if (t1 && t2) return [t1, t2];
@@ -1683,8 +1743,7 @@ export class Duel {
     return [list[0], list[1] || list[0]];
   }
 
-  beginMatch() {
-    const P = this.w.players.slice(0, 2);
+  beginMatch(P) {
     this.fighters = P.map((p) => p.id);
     this.wins = Object.fromEntries(P.map((p) => [p.id, 0]));
     this.round = 0; this.winner = null; this.results = [];
@@ -1692,7 +1751,7 @@ export class Duel {
   }
 
   startRound(first) {
-    this.w.stars = [];
+    this.w.stars = this.w.stars.filter((s) => s.arena !== this.index);
     const cv = this.w.cv;
     this.round++;
     const pair = this.pickSpawnPair();
@@ -1706,7 +1765,7 @@ export class Duel {
     });
     this.state = 'warmup';
     this.timer = first ? cv.f('vs_duel_warmup_time_initial') : cv.f('vs_duel_warmup_time_intermediate');
-    this.w.emit({ type: 'round_start', round: this.round, warmup: this.timer, maxRounds: cv.f('vs_duel_rounds') });
+    this.emit({ type: 'round_start', round: this.round, warmup: this.timer, maxRounds: cv.f('vs_duel_rounds') });
   }
 
   update() {
@@ -1718,7 +1777,7 @@ export class Duel {
         if (this.timer <= 0) {
           this.state = 'fight'; this.timer = cv.f('vs_duel_timelimit');
           for (const id of this.fighters) { const p = this.w.player(id); if (p) p.frozen = false; }
-          this.w.emit({ type: 'fight' });
+          this.emit({ type: 'fight' });
         }
         break;
       case 'fight':
@@ -1732,7 +1791,12 @@ export class Duel {
         if (this.timer <= 0) this.afterIntermission();
         break;
       case 'cooldown':
-        if (this.timer <= 0) { if (this.w.players.length >= 2) this.beginMatch(); else this.state = 'waiting'; }
+        if (this.timer <= 0) {
+          // [R 1803592d0] the fighters are out, and whoever asked to stop watching leaves the queue
+          this.queue = this.queue.filter((p) => !(p.unready && this.fighters.includes(p.id)));
+          this.state = 'waiting'; this.fighters = [];
+          this.refill();
+        }
         break;
       default:
     }
@@ -1750,7 +1814,7 @@ export class Duel {
     this.state = 'intermission';
     this.timer = cv.f('vs_duel_intermission_time');
     this.last = { winner: winner?.id ?? null, why };
-    this.w.emit({ type: 'round_end', winner: winner?.id ?? null, why, wins: this.wins });
+    this.emit({ type: 'round_end', winner: winner?.id ?? null, why, wins: this.wins });
   }
 
   afterIntermission() {
@@ -1761,9 +1825,13 @@ export class Duel {
       this.winner = champ ?? null;
       const p = champ !== undefined ? this.w.player(champ) : null;
       if (p) p.score++;
+      // [R 18031ea20] winner to the front, the rest to the back
+      const others = this.queue.filter((q) => this.fighters.includes(q.id) && q !== p);
+      if (p) for (const q of others) q.losses = (q.losses ?? 0) + 1;
+      this.queue = [...(p ? [p] : []), ...this.queue.filter((q) => q !== p && !others.includes(q)), ...others];
       this.state = 'cooldown';
       this.timer = cv.f('vs_duel_cooldown_time');
-      this.w.emit({ type: 'duel_over', winner: champ ?? null, wins: this.wins });
+      this.emit({ type: 'duel_over', winner: champ ?? null, wins: this.wins });
     } else this.startRound(false);
   }
 }

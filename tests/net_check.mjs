@@ -16,7 +16,7 @@ const IN = { ATTACK: 1, FORWARD: 8, BLOCK: 0x800000 };
 const mk = (name, character) => new Promise((ok) => {
   const ws = new WebSocket(`ws://localhost:${port}/ws`);
   const c = { ws, name, id: null, snap: null, evs: [] };
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, character }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, character, queue: true }));
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.t === 'welcome') { c.id = m.id; ok(c); } if (m.t === 'snap') c.snap = m; if (m.t === 'ev') c.evs.push(...m.ev); };
 });
 const a = await mk('A', 'knight'), b = await mk('B', 'phalanx');

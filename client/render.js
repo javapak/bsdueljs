@@ -659,6 +659,14 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
   return vec4f(vec3f(mix(0.9, 0.3, smoothstep(0.0, 1.35, d))), 1);
 }`);
     this.pBackdrop = d.createRenderPipeline({ layout: 'auto', vertex: { module: bd, entryPoint: 'vs' }, fragment: { module: bd, entryPoint: 'fs', targets: target }, primitive: { topology: 'triangle-list' }, depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' } });
+    const blit = mod(`
+struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> O { var o: O; let x = f32(i32(i & 1u) * 4 - 1); let y = f32(i32(i >> 1u) * 4 - 1); o.p = vec4f(x, y, 0, 1); o.uv = vec2f(x * 0.5 + 0.5, 0.5 - y * 0.5); return o; }
+@fragment fn fs(i: O) -> @location(0) vec4f { return vec4f(textureSampleLevel(tex, samp, i.uv, 0.0).rgb, 1); }`);
+    this.pBlit = d.createRenderPipeline({ layout: 'auto', vertex: { module: blit, entryPoint: 'vs' }, fragment: { module: blit, entryPoint: 'fs', targets: target }, primitive: { topology: 'triangle-list' } });
+    this.blitSamp = d.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     const wtr = mod(WATER_WGSL);
     this.pWater = d.createRenderPipeline({
       layout: d.createPipelineLayout({ bindGroupLayouts: [this.g0Water, this.gWaterMat] }),
@@ -890,6 +898,7 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
     this.sceneCopy = this.device.createTexture({ size: [w, h], format: this.format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     this.bgFx0 = null;
     this.bg0Water = null;
+    this.bgPreview = null;
   }
 
   // ---------------------------------------------------------------- materials
@@ -1454,13 +1463,95 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
     return { buf, bg: this.device.createBindGroup({ layout: this.gBones, entries: [{ binding: 0, resource: { buffer: buf } }] }), data: new Float32Array(words), lightAge: 0, env: null };
   }
 
+  // ---------------------------------------------------------------- attack preview
+  async loadTracerPreview() {
+    const d = this.device, vm = await this._vmt('models/tracemodels/preview', null), p = vm?.p;
+    if (!p) return;
+    const [base, scroll] = await Promise.all([this._tex(p.$basetexture, null), this._tex(p.$scroll_texture, null)]);
+    if (!base || !scroll) return;
+    const list = (k) => String(p[k]).match(/-?[\d.]+/g).map(Number), num = (k) => parseFloat(p[k]);
+    this.previewMat = { color: list('$color'), pulse: list('$pulse_color'), hl: list('$highlight_color'), hp: list('$highlight_pulse_color'), scroll: list('$scroll_speeds'), cfg: ['$pulse_highlight_frequency', '$pulse_highlight_speed', '$pulse_fade_frequency', '$pulse_fade_speed'].map(num) };
+    const m = d.createShaderModule({ code: PREVIEW_WGSL });
+    this.gPreview = d.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} }, { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} }, { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } }] });
+    this.previewTex = [base.createView(), scroll.createView()];
+    this.previewUB = d.createBuffer({ size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.previewVB = d.createBuffer({ size: 1 << 16, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    this.pPreview = d.createRenderPipeline({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.gPreview] }),
+      vertex: { module: m, entryPoint: 'vs', buffers: [{ arrayStride: 28, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x4' }] }] },
+      fragment: { module: m, entryPoint: 'fs', targets: [{ format: this.format, blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one' }, alpha: { srcFactor: 'zero', dstFactor: 'one' } } }] },
+      primitive: { topology: 'triangle-strip', cullMode: 'none' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+    });
+  }
+
+  _drawTracerPreview(enc, view, colorTex, depth, tg) {
+    const tp = view.tracerPreview, d = this.device, m = this.previewMat;
+    if (!tp || !this.pPreview || tp.verts.byteLength > this.previewVB.size) return;
+    d.queue.writeBuffer(this.previewVB, 0, tp.verts);
+    d.queue.writeBuffer(this.previewUB, 0, new Float32Array([...view.vp, tp.opacity, performance.now() / 1000, view.near ?? 4, view.far ?? 16000, ...tp.ranges,
+      ...m.color, 0, ...m.pulse, 0, ...m.scroll, 0, 0, ...m.cfg, ...m.hl, tp.amount, ...m.hp, tp.position]));
+    const bg = (tg ?? this).bgPreview ??= d.createBindGroup({ layout: this.gPreview, entries: [{ binding: 0, resource: { buffer: this.previewUB } }, { binding: 1, resource: this.previewTex[0] }, { binding: 2, resource: this.previewTex[1] }, { binding: 3, resource: this.samp }, { binding: 4, resource: depth.createView({ aspect: 'depth-only' }) }] });
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: colorTex.createView(), loadOp: 'load', storeOp: 'store' }], depthStencilAttachment: { view: depth.createView(), depthReadOnly: true } });
+    pass.setPipeline(this.pPreview);
+    pass.setBindGroup(0, bg);
+    pass.setVertexBuffer(0, this.previewVB);
+    pass.draw(tp.count);
+    pass.end();
+  }
+
+  // ---------------------------------------------------------------- arena previews
+  // [R client 18028ac20, 180268420] the scoreboard shows each arena through its spectator camera. The game keeps one
+  // texture (_rt_duelPreview) split into four cells; a texture per arena gives the water its own depth and scene copy.
+  previewTarget(i) {
+    const d = this.device, w = Math.max(1, this.canvas.width >> 1), h = Math.max(1, this.canvas.height >> 1);
+    this.previews ??= [];
+    let t = this.previews[i];
+    if (t?.color.width === w && t.color.height === h) return t;
+    if (t) { t.color.destroy(); t.depth.destroy(); t.scene.destroy(); }
+    const color = d.createTexture({ size: [w, h], format: this.format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
+    t = this.previews[i] = {
+      color,
+      depth: d.createTexture({ size: [w, h], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING }),
+      scene: d.createTexture({ size: [w, h], format: this.format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST }),
+      bg0Water: null, bgPreview: null, drawn: false,
+      blit: d.createBindGroup({ layout: this.pBlit.getBindGroupLayout(0), entries: [{ binding: 0, resource: color.createView() }, { binding: 1, resource: this.blitSamp }] }),
+    };
+    return t;
+  }
+
+  // rects: [{ i, x, y, w, h }] in canvas pixels, drawn over the frame already on the canvas
+  drawPreviews(rects) {
+    const shown = rects.filter((r) => this.previews?.[r.i]?.drawn);
+    if (!shown.length) return;
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.ctx.getCurrentTexture().createView(), loadOp: 'load', storeOp: 'store' }] });
+    pass.setPipeline(this.pBlit);
+    for (const r of shown) {
+      // a window too small to hold the view: the columns clip it, so don't draw past the canvas either
+      if (r.w <= 0 || r.h <= 0 || r.x < 0 || r.y < 0 || r.x + r.w > this.canvas.width || r.y + r.h > this.canvas.height) continue;
+      pass.setViewport(r.x, r.y, r.w, r.h, 0, 1);
+      pass.setBindGroup(0, this.previews[r.i].blit);
+      pass.draw(3);
+    }
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+  }
+
   // ---------------------------------------------------------------- frame
   frame(view) {
     this.resize();
     const d = this.device;
     const now = performance.now() / 1000;
-    if (!view.preview) this.exposure.step(this.lastFrameT ? Math.min(0.1, now - this.lastFrameT) : 0);
-    this.lastFrameT = now;
+    // an arena preview is an extra view of the same frame, so it leaves the exposure alone
+    const tg = view.target;
+    if (!tg) {
+      if (!view.preview) this.exposure.step(this.lastFrameT ? Math.min(0.1, now - this.lastFrameT) : 0);
+      this.lastFrameT = now;
+    }
     const cam = new Float32Array(84);
     cam.set(view.vp, 0); cam.set([...view.eye, 1], 16); cam.set([...(this.sun || [0.3, 0.3, 0.9]), 1], 20); cam.set([0, 0, 0, this.exposure.scale], 24);
     if (view.preview) cam[27] = 1; // no auto exposure on the menu
@@ -1475,10 +1566,11 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
     d.queue.writeBuffer(this.camBuf, 0, cam);
     const enc = d.createCommandEncoder();
     if (csmOn) this._drawCascades(enc, view);
-    const colorTex = this.ctx.getCurrentTexture();
+    const colorTex = tg?.color ?? this.ctx.getCurrentTexture();
+    const depth = tg?.depth ?? this.depth, sceneCopy = tg?.scene ?? this.sceneCopy, copySize = [colorTex.width, colorTex.height];
     const pass = enc.beginRenderPass({
       colorAttachments: [{ view: colorTex.createView(), clearValue: { r: 0.5, g: 0.6, b: 0.75, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      depthStencilAttachment: { view: this.depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+      depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
     });
     if (view.preview) { pass.setPipeline(this.pBackdrop); pass.draw(3); }
     if (this.bg0World && !this.hideWorld && !view.preview) {
@@ -1534,22 +1626,23 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
     }
     pass.end();
     if (this.waterDraws.length && !this.hideWorld && !view.preview) {
-      enc.copyTextureToTexture({ texture: colorTex }, { texture: this.sceneCopy }, [this.canvas.width, this.canvas.height]);
+      enc.copyTextureToTexture({ texture: colorTex }, { texture: sceneCopy }, copySize);
       const right = norm3(cross3(view.fwd, [0, 0, 1])), up = cross3(right, view.fwd);
       d.queue.writeBuffer(this.waterBuf, 0, new Float32Array([...invert4(view.vp), ...right, 0, ...up, 0, performance.now() / 1000, 0, 0, 0]));
-      this.bg0Water ??= d.createBindGroup({ layout: this.g0Water, entries: [
+      const bgWater = (tg ?? this).bg0Water ??= d.createBindGroup({ layout: this.g0Water, entries: [
         { binding: 0, resource: { buffer: this.camBuf } }, { binding: 1, resource: this.samp }, { binding: 2, resource: this.lmView }, { binding: 3, resource: this.lmSamp },
-        { binding: 4, resource: this.sceneCopy.createView() }, { binding: 5, resource: this.depth.createView() }, { binding: 6, resource: { buffer: this.waterBuf } }] });
+        { binding: 4, resource: sceneCopy.createView() }, { binding: 5, resource: depth.createView() }, { binding: 6, resource: { buffer: this.waterBuf } }] });
       const wp = enc.beginRenderPass({
         colorAttachments: [{ view: colorTex.createView(), loadOp: 'load', storeOp: 'store' }],
-        depthStencilAttachment: { view: this.depth.createView(), depthReadOnly: true },
+        depthStencilAttachment: { view: depth.createView(), depthReadOnly: true },
       });
       wp.setPipeline(this.pWater);
-      wp.setBindGroup(0, this.bg0Water);
+      wp.setBindGroup(0, bgWater);
       wp.setVertexBuffer(0, this.worldVB);
       for (const dr of this.waterDraws) { wp.setBindGroup(1, dr.bg); wp.draw(dr.count, 1, dr.first, 0); }
       wp.end();
     }
+    if (view.tracerPreview) this._drawTracerPreview(enc, view, colorTex, depth, tg);
     const fx = view.fx;
     if (fx?.count) {
       d.queue.writeBuffer(this.fxVB, 0, fx.verts, 0, fx.count);
@@ -1564,7 +1657,7 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
       for (const x of fx.draws) { p2.setPipeline(x.mat.refract ? this.pFxRefract : this.pFx); p2.setBindGroup(1, x.mat.bg); p2.draw(x.count, 1, x.first, 0); }
       p2.end();
     }
-    const readHist = !view.preview && !this.histBusy && ++this.histFrame % 6 === 0;
+    const readHist = !view.preview && !tg && !this.histBusy && ++this.histFrame % 6 === 0;
     if (readHist) {
       const hp = enc.beginRenderPass({ colorAttachments: [{ view: this.histTex.createView(), loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
       hp.setPipeline(this.pHist);
@@ -1587,6 +1680,38 @@ struct O { @builtin(position) p: vec4f, @location(0) c: vec2f };
     }
   }
 }
+// [R bb_tracer_preview_ps20b] Faded along the swing, across it and from the top, pulsing, with the part up to a target in
+// the highlight colours. Depth from _rt_FullFrameDepth's range of 192 feathers it into the world over 50 units.
+const PREVIEW_WGSL = `
+struct P { vp: mat4x4f, at: vec4f, r: vec4f, color: vec4f, pulse: vec4f, scroll: vec4f, cfg: vec4f, hl: vec4f, hp: vec4f };
+@group(0) @binding(0) var<uniform> u: P;
+@group(0) @binding(1) var base: texture_2d<f32>;
+@group(0) @binding(2) var scrollTex: texture_2d<f32>;
+@group(0) @binding(3) var samp: sampler;
+@group(0) @binding(4) var depth: texture_depth_2d;
+struct O { @builtin(position) p: vec4f, @location(0) t: vec4f, @location(1) cw: f32 };
+@vertex fn vs(@location(0) pos: vec3f, @location(1) t: vec4f) -> O { var o: O; o.p = u.vp * vec4f(pos, 1); o.t = t; o.cw = o.p.w; return o; }
+fn ss(x: f32) -> f32 { return x * x * (3.0 - 2.0 * x); }
+fn pow4(x: f32) -> f32 { let y = x * x; return y * y; }
+@fragment fn fs(i: O) -> @location(0) vec4f {
+  let t = i.t; let time = u.at.y;
+  let breathe = ss((sin(t.z * u.cfg.z + time * u.cfg.w) + 1.0) * 0.5);
+  let bump = pow4(1.0 - ss(saturate(abs(t.z - u.r.w) * 12.0)));
+  var a = u.at.x * (breathe * breathe * breathe * 0.6 + 0.4) + bump;
+  a *= saturate((t.z - u.r.x) * 10.0) * saturate((u.r.y - t.z) * 5.0) * saturate((t.y - u.r.z) * 20.0);
+  a = saturate(a * ss(saturate((abs(2.0 * t.w - 1.0) - 1.0) / (saturate(0.8 - t.z) - 1.0))));
+  let n = u.at.z; let f = u.at.w;
+  let sceneZ = n * f / (f - textureLoad(depth, vec2i(i.p.xy), 0) * (f - n));
+  let scene = saturate(sceneZ / 192.0);
+  let feather = saturate(max(ss(saturate((scene - 0.75) * 4.0)), abs(scene - i.cw / 192.0) * 192.0 / 50.0));
+  let h = max(2.0 * (sin(t.z * u.cfg.x + time * u.cfg.y) - 0.5), 0.0);
+  let bright = max(pow4(h * h * (3.0 - 2.0 * h)), bump);
+  let k = saturate((t.z - u.hp.w) * 15.0) * u.hl.w;
+  let b = textureSample(base, samp, t.xy + vec2f(time * u.scroll.x, 0)).rgb;
+  let s = textureSample(scrollTex, samp, t.xy + vec2f(time * u.scroll.y, 0)).rgb;
+  let c = mix(b * mix(u.color.rgb, u.hl.rgb, k), b * mix(u.pulse.rgb, u.hp.rgb, k), bright);
+  return vec4f(s * c, 2.0 * a * feather);
+}`;
 const SRGB_LINEAR = Float32Array.from({ length: 256 }, (_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
 
 function rigidInverse(m) {

@@ -50,10 +50,11 @@ These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapo
 | `node tests/exposure_check.mjs "<install>"` | auto exposure's direction, the map's limits, and the bright-pixel search |
 | `node tests/hit_check.mjs "<install>"` | a tapped attack on a stationary fighter lands across one continuous band of ranges, every character and stance |
 | `node tests/particle_check.mjs "<install>/berimbau"` | every dispatched effect runs on real data, emits, and finishes; the effects maps place are implemented and stay finite |
+| `node tests/queue_check.mjs "<install>"` | arena queues on a three-arena map: who plays, order after a win, loss and draw, leaving, bots, and arenas not touching |
 | `node tests/wall_check.mjs "<install>"` | wall run, slide, wall jump and run limit, plus throwables: timing, hits, blocks, cancel and delay |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
 | `node tests/net_check.mjs "<install>"` | full match between two real WebSocket clients; path traversal rejected |
-| `PWDIR=<playwright dir> node tests/browser_match.mjs "<url>?nolock=1" <prefix>` | full match in a browser with real key and mouse events |
+| `PWDIR=<playwright dir> node tests/browser_match.mjs "<url>?nolock=1&ready=1" <prefix>` | full match in a browser with real key and mouse events |
 
 ## Effects
 
@@ -69,6 +70,7 @@ The client runs the game's own `.pcf` particle definitions and `.vmt` materials 
 | `berimbau_player_charge`, `charge_tier3_forward` | charge reaches tier 2; a tier 3 attack releases | read from `server.dll` |
 | `blocking_forward` | parry window (jian) | read from `client.dll` |
 | swing trail (`trace_map`) | while the swing's tracer script runs | read from `client.dll`; samples per frame, not per `.bst` entry |
+| attack preview (`TracerPreview`) | the local fighter, alive: the attack the stance, keys and string would start, or the one being charged or swung | read from `client.dll`, `bb_tracer_preview_ps20b`; the part up to an enemy on the path turns orange |
 | charge overlay (`bb_charge`) | while charging | ported from shader bytecode; how it fades after release is inferred |
 
 **Approximate:** blending is gamma-space with a correction for additive light, because the renderer has no HDR target or bloom. Particle lighting tint, second sprite sequences and frame blending are skipped. Particles that attach to a model use bone positions rather than hitboxes. The character color is the first `colorlist` entry for both the charge and the trail.
@@ -77,7 +79,15 @@ The client runs the game's own `.pcf` particle definitions and `.vmt` materials 
 
 **Water:** a port of `water_ps30`'s flow map, fresnel and refraction, plus `Refract` world materials such as the winter waterfall. The live game reflects a second render of the scene; here the reflection is the material's cubemap, so characters and nearby geometry don't appear in it. Underwater fog's distance and the distortion fading with it are inferred, and animated normal maps hold their first frame.
 
-**Not done:** the attack preview (`bb_tracerPreview`, `TracerPreview` shader), `string_reset`, footstep and slide dust, sword glows (cosmetic), `env_sprite`.
+**Not done:** `string_reset`, footstep and slide dust, sword glows (cosmetic), `env_sprite`.
+
+## Arenas and spectating
+
+Each `berimbau_duel` on a map runs its own queue and match at the same time (`Duel` in `shared/sim.js`). Fighters only touch others in their arena. Joining the server spectates; `R` (`vs_ready`) joins or leaves the queue of the arena you're watching. A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to the back, read from `server.dll`. People don't wait behind bots, and with `--bot` anyone alone in a queue gets one. Add `?ready=1` to the URL to queue on joining.
+
+Holding `Tab` shows every arena in three columns, each with a live view through its camera (one arena renders per frame, without particles, like the game): who's playing with wins-losses and ping, who's queued, who's watching, with Join and View buttons while you have a cursor. Watching: `Space` opens the controls from `spectator_controls.res` (view, player, arena, join, customize), the arrow keys change arena, and the camera is the arena's `berimbau_spectator_camera` with the game's FOV and easing, or a chase view of a fighter.
+
+**Inferred:** the attack preview restarting the string with `bb_string_reset_time`, its feathering as a plain 50-unit distance, the preview texture's size and where the status line and text rows sit in a scoreboard column, where the "current match" and "up next" panel sits, which camera an arena with two uses (the first), that the duel camera holds the entity's angles, a second person ending a bot match on the spot, and `R` ending a bot match rather than waiting it out. **Not done:** 2v1 and 2v2 arenas, tournament mode (`vs_queue_mode`), and duel replays (`vs_duel_replay_time`).
 
 ## Outfits
 

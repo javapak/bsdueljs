@@ -7,8 +7,11 @@ import { Renderer } from './render.js';
 import { FX } from './fx.js';
 import { createHud } from './hud.js';
 import { createCustomize } from './customize.js';
+import { createSpectator } from './spectator.js';
+import { createScoreboard } from './scoreboard.js';
 import { Audio } from './audio.js';
 import { parsePhy, Ragdoll } from '/shared/ragdoll.js';
+import { TracerPreview, OPACITY, buildPath } from '/shared/tracerpreview.js';
 
 const $ = (id) => document.getElementById(id);
 const status = (s, err) => { const e = $('status'); if (!e) return; e.textContent = s; e.className = err ? 'err' : ''; e.style.visibility = s === 'Ready.' ? 'hidden' : ''; };
@@ -56,6 +59,7 @@ const bsp = new BSP(bspBytes);
 await bsp.addPropCollision((p) => fetchGame(p));
 bspRef = bsp;
 await R.loadWorld(bsp, (s) => status(`Loading ${info.map}: ${s}`));
+R.loadTracerPreview().catch(() => {});
 const fx = new FX(R, fetchGame, bsp);
 window.duelDebug.fx = fx;
 fx.throwables = info.throwables;
@@ -87,6 +91,17 @@ customize.ready(); status('Ready.');
 
 // ------------------------------------------------------------ net
 let ws, myId = null, started = false;
+// A person in the world plays; anyone else on the server watches an arena
+let spectating = true;
+const sendReady = () => { if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'ready', arena: spectator.view.arena })); };
+const mapName = String(info.map).replace(/^duel_/, '').replace(/_/g, ' ');
+const spectator = createSpectator(document.body, { mapName, onReady: () => sendReady(), onCustomize: () => openCustomize() });
+// +score: held on Tab
+const scoreboard = createScoreboard(document.body, {
+  title: `Blade Symphony Duel - ${mapName}`,
+  onJoin: (i) => { spectator.view.arena = i; sendReady(); },
+  onView: (i) => { spectator.view.arena = i; },
+});
 const snaps = [];
 const clockOffset = { v: 0, set: false };
 let camYaw = 0, camPitch = 8;
@@ -96,7 +111,7 @@ function connect() {
   ws.onclose = () => { myId = null; started = false; customize.show(false); status('Disconnected from server.', true); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.t === 'welcome') myId = m.id;
+    if (m.t === 'welcome') { myId = m.id; if (params.has('ready')) sendReady(); }
     else if (m.t === 'full') status('Server already has two players.', true);
     else if (m.t === 'snap') {
       snaps.push(m);
@@ -121,14 +136,25 @@ const KEYMAP = { KeyE: IN.THROW, KeyW: IN.FORWARD, KeyS: IN.BACK, KeyA: IN.LEFT,
 addEventListener('keydown', (e) => {
   // bb_show_customization: M opens it in a match, and it takes over the screen and the keys until it closes
   if (customize.open) { if (e.code === 'Escape' && started) closeCustomize(); return; }
+  // text fields keep their keys, whatever state the game is in
+  if (e.target instanceof HTMLInputElement) return;
+  if (e.code === 'Tab' && started) { e.preventDefault(); scoreboard.show(true, spectating); return; }
   if (e.code === 'KeyM' && started) { openCustomize(); return; }
+  // vs_ready: bound to R in the game's config
+  if (e.code === 'KeyR' && started) { if (!e.repeat) sendReady(); return; }
+  if (spectating && started) {
+    // a button clicked earlier keeps focus, and Space would press it too
+    if (e.code === 'Space') { e.preventDefault(); document.activeElement?.blur?.(); if (!e.repeat) spectator.toggle(); return; }
+    if (e.code === 'ArrowLeft') { spectator.cycle(-1); return; }
+    if (e.code === 'ArrowRight') { spectator.cycle(1); return; }
+  }
   if (KEYMAP[e.code] !== undefined) { keys.add(e.code); e.preventDefault(); }
 });
-addEventListener('keyup', (e) => keys.delete(e.code));
-addEventListener('blur', () => { keys.clear(); mouse = 0; });
+addEventListener('keyup', (e) => { keys.delete(e.code); if (e.code === 'Tab') scoreboard.show(false); });
+addEventListener('blur', () => { keys.clear(); mouse = 0; scoreboard.show(false); });
 const sens = 0.22;
 document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) { if (!frozen) camYaw = angleNorm(camYaw - e.movementX * sens); camPitch = Math.max(-60, Math.min(70, camPitch + e.movementY * sens)); } });
-canvas.addEventListener('mousedown', (e) => { if (customize.open) return; if (document.pointerLockElement !== canvas) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* retried on next click */ } if (!window.duelDebug.allowUnlocked) return; } mouse |= e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0; });
+canvas.addEventListener('mousedown', (e) => { if (customize.open || spectating) return; if (document.pointerLockElement !== canvas) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* retried on next click */ } if (!window.duelDebug.allowUnlocked) return; } mouse |= e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0; });
 addEventListener('mouseup', (e) => { mouse &= ~(e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0); });
 addEventListener('contextmenu', (e) => e.preventDefault());
 let seq = 0;
@@ -136,10 +162,10 @@ setInterval(() => {
   if (ws?.readyState !== 1 || myId == null) return;
   let b = mouse;
   for (const k of keys) b |= KEYMAP[k];
-  if (customize.open) b = 0;
+  if (customize.open || spectating) b = 0;
   if (window.duelDebug.forceButtons !== undefined) b = window.duelDebug.forceButtons;
   if (window.duelDebug.forceYaw !== undefined) camYaw = window.duelDebug.forceYaw;
-  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y: +camYaw.toFixed(2), p: +camPitch.toFixed(2) }));
+  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y: +camYaw.toFixed(2), p: +camPitch.toFixed(2), e: snaps.at(-1)?.time }));
 }, 15);
 
 // ------------------------------------------------------------ hud/events
@@ -151,6 +177,8 @@ function logLine(s) { const d = document.createElement('div'); d.textContent = s
 const nameOf = (id) => snaps.at(-1)?.players.find((p) => p.id === id)?.n ?? '?';
 function onEvent(e) {
   window.duelDebug.lastEvents = (window.duelDebug.lastEvents || []).concat(e.type).slice(-40);
+  // what an arena announces is for those watching it
+  if (e.arena !== undefined && e.arena !== spectator.view.arena) return;
   switch (e.type) {
     case 'round_start': banner(`Round ${e.round}`, 2); break;
     case 'fight': banner('Fight!', 1); break;
@@ -444,6 +472,54 @@ function previewFrame(time) {
   R.frame({ vp, eye: MENU_EYE, fwd: norm3(MENU_LOOK.map((v, i) => v - MENU_EYE[i])), fovY, characters: parts, tris: [], preview: true });
 }
 
+// ------------------------------------------------------------ spectator camera
+// berimbau_spectator_camera, by the arena it names. [R client.dll 18027b900] 85 degrees (bb_cam_dueloverview_fov), its angles
+// easing at 14 per second (bb_cam_dueloverview_angleslerp_speed), and it cuts between arenas: animating that is off by default.
+// [I] a map with two cameras on one arena uses the first, and the camera holds the entity's own angles.
+const arenaCams = bsp.entities.filter((e) => e.classname === 'berimbau_spectator_camera');
+const specLook = { dir: null };
+function spectatorCamera(cur, now) {
+  const view = spectator.view, d = cur.snap.arenas?.[view.arena];
+  const follow = view.mode === 'player' ? cur.players.find((p) => p.id === view.follow) : null;
+  if (follow) {
+    const { forward: f } = angleVectors([follow.p ?? 0, follow.y, 0]), head = [follow.o[0], follow.o[1], follow.o[2] + 62];
+    const wanted = [head[0] - f[0] * 110, head[1] - f[1] * 110, head[2] - f[2] * 110];
+    return [bsp.traceBox(head, wanted, camHull.mn, camHull.mx, 1).endpos, [head[0] + f[0] * 100, head[1] + f[1] * 100, head[2] + f[2] * 100], 75 * DEG];
+  }
+  const cam = arenaCams.find((c) => c.duel === d?.tn) ?? arenaCams[0];
+  if (!cam) return [[0, 0, 100], [100, 0, 100], 75 * DEG];
+  const eye = cam.origin.split(' ').map(Number), [p, y] = (cam.angles ?? '0 0 0').split(' ').map(Number);
+  const want = angleVectors([p, y, 0]).forward;
+  const dt = Math.min(0.1, (now - (specLook.t ?? now)) / 1000); specLook.t = now;
+  const k = Math.min(1, 14 * dt), was = specLook.dir && specLook.eye === cam ? specLook.dir : want;
+  specLook.eye = cam;
+  specLook.dir = norm3(was.map((v, i) => v + (want[i] - v) * k));
+  const hFov = 85 * DEG, vFov = 2 * Math.atan(Math.tan(hFov / 2) * 0.75); // Source's fov is the width of a 4:3 view
+  return [eye, eye.map((v, i) => v + specLook.dir[i] * 100), vFov];
+}
+
+// [R client 18028ac20] an arena's preview: its camera (server 180327d4d copies m_vecPreviewOrigin and m_angPreviewAngles
+// from the first one), fov 90 straight across the view since this path skips the 4:3 scaling, near 10, far 10000
+function previewView(d, aspect) {
+  const cam = arenaCams.find((c) => c.duel === d.tn) ?? arenaCams[0];
+  if (!cam) return null;
+  const eye = cam.origin.split(' ').map(Number), [p, y] = (cam.angles ?? '0 0 0').split(' ').map(Number);
+  const fwd = angleVectors([p, y, 0]).forward, fovY = 2 * Math.atan(1 / aspect);
+  return { eye, fwd, fovY, near: 10, far: 10000, vp: mul4(perspective(fovY, aspect, 10, 10000), lookAt(eye, eye.map((v, i) => v + fwd[i] * 100), [0, 0, 1])) };
+}
+
+// [R client 1802c3920] the attack preview is for the local fighter, while alive
+const attackPreview = new TracerPreview();
+function previewFrameData(me, cur, dt) {
+  const ci = me && charCache.get(me.c)?._resolved, want = me?.al ? snaps.at(-1)?.pv ?? null : null;
+  attackPreview.update(dt, ci ? want : null, me?.a?.ph === 'swing', (w) => buildPath(ci.char, ci.gripBone, w.a, w.l, info.tracers[me.c]?.[String(w.a).toUpperCase()]));
+  if (!me) return null;
+  const aim = Math.max(-60, Math.min(40, me.p ?? 0));
+  attackPreview.highlight(dt, me.o, aim, me.y, cur.players.filter((p) => p.id !== me.id && p.al && (p.ar ?? 0) === (me.ar ?? 0)).map((p) => p.o));
+  const d = attackPreview.draw(me.o, aim, me.y);
+  return d && { ...d, opacity: OPACITY };
+}
+
 // ------------------------------------------------------------ frame loop
 const norm3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
 let lastFrame = performance.now();
@@ -455,7 +531,7 @@ async function tick() {
   const now = performance.now();
   if (now - fpsT > 1000) { fps = frames; frames = 0; fpsT = now; window.duelDebug.fps = fps; }
   if (customize.open) { previewFrame(now / 1000); return; }
-  let eye = [0, 0, 100], tgt = [100, 0, 100];
+  let eye = [0, 0, 100], tgt = [100, 0, 100], fovNow = 75 * DEG;
   const characters = [], tris = [], attached = [];
   let me = null, cur = null;
   if (snaps.length) {
@@ -485,6 +561,11 @@ async function tick() {
     }
     starsFrame(cur, renderTime, attached);
   }
+  // In the world: play and watch your own arena. Out of it: the cursor is back for the spectator controls.
+  spectating = !me;
+  if (me) spectator.view.arena = me.ar ?? 0;
+  if (spectating && document.pointerLockElement === canvas) document.exitPointerLock?.();
+  if (spectating) { keys.clear(); mouse = 0; }
   if (me) {
     const { forward: f } = angleVectors([camPitch, camYaw, 0]);
     const head = [me.o[0], me.o[1], me.o[2] + 62];
@@ -494,13 +575,15 @@ async function tick() {
     const tr = bsp.traceBox(orbit, wanted, camHull.mn, camHull.mx, 1);
     eye = tr.endpos;
     tgt = [orbit[0] + f[0] * 100, orbit[1] + f[1] * 100, orbit[2] + f[2] * 100];
+  } else if (started && cur) {
+    [eye, tgt, fovNow] = spectatorCamera(cur, now);
   } else {
     const s = bsp.entities.find((e) => e.classname === 'berimbau_spawn');
     if (s) { const o = s.origin.split(' ').map(Number); eye = [o[0], o[1], o[2] + 140]; const a = now / 4000; tgt = [o[0] + Math.cos(a) * 300, o[1] + Math.sin(a) * 300, o[2] + 60]; }
   }
   if (window.duelDebug.cam) { eye = window.duelDebug.cam.eye; tgt = window.duelDebug.cam.tgt; }
   const aspect = canvas.width / canvas.height;
-  const vp = mul4(perspective(75 * DEG, aspect, 4, 16000), lookAt(eye, tgt, [0, 0, 1]));
+  const vp = mul4(perspective(fovNow, aspect, 4, 16000), lookAt(eye, tgt, [0, 0, 1]));
   const dt = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000));
   lastFrame = now;
   fx.localPos = me?.o;
@@ -508,15 +591,33 @@ async function tick() {
   const F = norm3([tgt[0] - eye[0], tgt[1] - eye[1], tgt[2] - eye[2]]), RT = norm3([F[1], -F[0], 0]), UP = [RT[1] * F[2] - RT[2] * F[1], RT[2] * F[0] - RT[0] * F[2], RT[0] * F[1] - RT[1] * F[0]];
   audio.frame(eye, RT);
   const built = fx.build(eye, RT, UP, Math.tan(37.5 * DEG));
-  R.frame({ vp, eye, fwd: F, fovY: 75 * DEG, characters: characters.concat(attached), tris, fx: { verts: fx.verts, count: built.count, draws: built.draws } });
+  const tracerPreview = cur ? previewFrameData(me, cur, dt) : null;
+  R.frame({ vp, eye, fwd: F, fovY: fovNow, characters: characters.concat(attached), tris, tracerPreview, fx: { verts: fx.verts, count: built.count, draws: built.draws } });
+  // [R client 180268650] one arena per frame in turn while the board is up, with r_drawparticles off
+  if (scoreboard.open && cur?.snap.arenas?.length) {
+    const arenas = cur.snap.arenas, i = frames % arenas.length, pv = previewView(arenas[i], aspect);
+    if (pv) { const target = R.previewTarget(i); R.frame({ ...pv, target, characters: characters.concat(attached), tris, tracerPreview }); target.drawn = true; }
+    R.drawPreviews(scoreboard.shots(canvas));
+  }
   if (cur) hud(cur, me);
   window.duelDebug.state = { snaps: snaps.length, myId, chars: characters.length, duel: cur?.snap?.duel, stats: R.stats, eye, me: me && { o: me.o, a: me.a, hp: me.hp, an: me.an } };
 }
-let lastHudAt = performance.now();
+let lastHudAt = performance.now(), lastViewSent = 0;
 function hud(cur, me) {
   const now = performance.now(), dt = (now - lastHudAt) / 1000;
   lastHudAt = now;
-  duelHud?.update(cur, me, myId, dt);
+  // The HUD shows the arena being watched
+  const arena = spectator.view.arena, arenas = cur.snap.arenas ?? [];
+  if (arenas[arena]) cur.snap.duel = arenas[arena];
+  $('hud').classList.toggle('spec', !me);
+  duelHud?.update({ ...cur, players: cur.players.filter((p) => (p.ar ?? 0) === arena) }, me, myId, dt);
+  spectator.show(started && !customize.open && !scoreboard.open);
+  // the previews are drawn on the canvas, under the page: nothing else may sit over them
+  $('hud').style.visibility = scoreboard.open ? 'hidden' : '';
+  spectator.update(arenas, myId, !me);
+  scoreboard.update(arenas, myId, arena);
+  // the server lists who's watching which arena
+  if (arena !== lastViewSent && ws?.readyState === 1) { lastViewSent = arena; ws.send(JSON.stringify({ t: 'view', arena })); }
   if (now > bannerUntil) $('banner').textContent = '';
   $('hint').textContent = me?.kn && !me.a ? 'Downed: Space get up, Mouse1 recovery attack, Mouse2 intercept, WASD roll' : '';
   $('net').textContent = `${window.duelDebug.fps ?? 0} fps`;
@@ -532,13 +633,13 @@ function openCustomize() {
 function closeCustomize() {
   customize.hide();
   $('hud').style.display = 'block';
-  try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* needs a user gesture; the next click locks */ }
+  if (!spectating) try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* needs a user gesture; the next click locks */ }
 }
 customize.onCancel(closeCustomize);
 customize.onConfirm(() => {
   if (started) {
     ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
-    banner('Loadout changes next round');
+    if (!spectating) banner('Loadout changes next round');
     closeCustomize();
     return;
   }
@@ -549,6 +650,5 @@ customize.onConfirm(() => {
   loadChar(customize.char);
   for (const k of Object.keys(info.characters)) loadChar(k);
   connect();
-  try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* needs a user gesture; the next click locks */ }
 });
 if (params.has('auto')) $('go').click();

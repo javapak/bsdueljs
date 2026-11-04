@@ -3,7 +3,7 @@ import { IN } from './sim.js';
 export function makeBotBrain() {
   let thinkAt = 0, plan = 'approach', holdUntil = 0, stanceAt = 0;
   return (p, w) => {
-    const q = w.players.find((x) => x !== p && x.alive);
+    const q = w.players.find((x) => x !== p && x.alive && x.arena === p.arena);
     if (!q || !p.alive || p.frozen) { p.buttons = 0; return; }
     const dx = q.origin[0] - p.origin[0], dy = q.origin[1] - p.origin[1];
     const d = Math.hypot(dx, dy);

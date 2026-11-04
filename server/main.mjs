@@ -78,16 +78,40 @@ function wsAccept(req, socket) {
 // ---------------------------------------------------------------- game protocol
 const conns = new Set();
 let nextId = 1;
-let botPlayer = null;
-function addBot() {
-  if (botPlayer) return;
-  const chars = Object.keys(data.characters);
-  botPlayer = new Player(nextId++, 'Bot', chars[Math.floor(Math.random() * chars.length)]);
-  botPlayer.isBot = true;
-  botPlayer.brain = makeBotBrain();
-  world.addPlayer(botPlayer);
+// With --bot, anyone alone in an arena's queue gets a bot; it goes as soon as there's a second person
+const arenaBots = new Map();
+function syncBots() {
+  if (!args.bot) return;
+  for (const d of world.duels) {
+    const people = d.queue.filter((p) => !p.isBot && !p.unready);
+    const bot = arenaBots.get(d);
+    if (people.length === 1 && !bot) {
+      const chars = Object.keys(data.characters);
+      const b = new Player(nextId++, 'Bot', chars[Math.floor(Math.random() * chars.length)]);
+      b.isBot = true;
+      b.brain = makeBotBrain();
+      b.look = data.defaultLook[b.character];
+      arenaBots.set(d, b);
+      world.addPlayer(b, d.index);
+    } else if (people.length !== 1 && bot) {
+      arenaBots.delete(d);
+      world.removePlayer(bot.id);
+    }
+  }
 }
-function removeBot() { if (botPlayer) { world.removePlayer(botPlayer.id); botPlayer = null; } }
+// vs_ready [R 180358f90]: joins the arena's queue or leaves it. A fighter stays for the match and leaves after it.
+function toggleReady(p, arena) {
+  const cur = world.duels.find((d) => d.queue.includes(p));
+  const to = world.duels[arena] ?? world.duels[0];
+  // [I] a match against a bot has nobody to keep waiting, so it ends there
+  const realMatch = cur?.fighters.includes(p.id) && cur.fighters.every((id) => !world.player(id)?.isBot);
+  if (realMatch && cur === to) { p.unready = !p.unready; }
+  else {
+    if (cur) cur.drop(p.id);
+    if (cur !== to) to.enqueue(p);
+  }
+  syncBots();
+}
 
 // What a client asks to wear, kept to items for this character: one skin, mask and cape, one attachment per slot,
 // and always a mask because the fighter models have no head of their own.
@@ -107,28 +131,34 @@ const validColor = (c) => (Array.isArray(c) && c.length === 3 && c.every(Number.
 function onMessage(c, m) {
   if (m.t === 'join') {
     if (c.player) return;
-    if (world.players.filter((p) => !p.isBot).length >= 2) { c.send({ t: 'full' }); return; }
     const ch = data.characters[m.character] ? m.character : 'knight';
-    removeBot();
     c.player = new Player(nextId++, String(m.name || 'Player').slice(0, 24), ch);
     if (Object.hasOwn(SWORD_LABELS, m.sword)) c.player.sword = m.sword;
     const item = data.swordItems.find((i) => i.id === m.item);
     if (item) { c.player.sword = item.type; c.player.swordItem = item.id; }
     c.player.look = validLook(m.look, ch);
     c.player.pickColor = validColor(m.color);
-    world.addPlayer(c.player);
-    if (args.bot && world.players.length < 2) addBot();
+    // Joining the server only spectates; ready joins an arena's queue, and a client can ask for that straight away
+    if (m.queue) toggleReady(c.player, m.arena | 0);
     c.send({ t: 'welcome', id: c.player.id, map: args.map, tick: TICK });
     console.log(`${c.player.name} joined as ${ch}`);
+  } else if (m.t === 'view' && c.player) {
+    c.player.viewArena = m.arena | 0;
+  } else if (m.t === 'ready' && c.player) {
+    toggleReady(c.player, m.arena | 0);
   } else if (m.t === 'cmd' && c.player) {
     c.player.buttons = m.b | 0;
+    // the newest snapshot's time, echoed back: how far behind the client is
+    if (Number.isFinite(m.e)) c.player.ping = Math.max(0, Math.round((world.time - m.e) * 1000));
     if (Number.isFinite(m.y)) c.player.viewYaw = m.y;
     if (Number.isFinite(m.p)) c.player.pitch = Math.max(-89, Math.min(89, m.p));
     c.lastSeq = m.s;
   } else if (m.t === 'loadout' && c.player) {
     // [I] from the customization screen in a match: takes effect when the next round starts
     const ch = data.characters[m.character] ? m.character : c.player.character, item = data.swordItems.find((i) => i.id === m.item);
-    c.player.nextLoadout = { character: ch, look: validLook(m.look, ch), pickColor: validColor(m.color), ...(item ? { sword: item.type, swordItem: item.id } : {}) };
+    const next = { character: ch, look: validLook(m.look, ch), pickColor: validColor(m.color), ...(item ? { sword: item.type, swordItem: item.id } : {}) };
+    // In the world it waits for the next round; watching, it applies now
+    if (world.players.includes(c.player)) c.player.nextLoadout = next; else Object.assign(c.player, next);
   } else if (m.t === 'character' && c.player && data.characters[m.character]) {
     c.player.character = m.character;
   }
@@ -138,25 +168,24 @@ function onClose(c) {
   if (c.player) {
     console.log(`${c.player.name} left`);
     world.removePlayer(c.player.id);
-    if (args.bot && world.players.filter((p) => !p.isBot).length === 1) addBot();
-    if (!world.players.some((p) => !p.isBot)) removeBot();
+    syncBots();
   }
 }
 
 const rnd = (x) => Math.round(x * 100) / 100;
 const rnd3 = (x) => Math.round(x * 1000) / 1000;
 function snapshot() {
-  const d = world.duel;
   return {
     t: 'snap', time: rnd(world.time), pj: world.stars.map((s) => ({ id: s.id, k: s.type, o: s.pos.map(rnd), v: s.vel.map(rnd) })), players: world.players.map((p) => {
       const an = world.animOf(p);
       return {
-        id: p.id, n: p.name, c: p.character, o: p.origin.map(rnd), v: p.vel.map(rnd), y: rnd(p.yaw), p: rnd(p.pitch), hp: p.health, al: p.alive, g: p.onGround, st: world.stanceNow(p), gs: p.stance, ci: world.time - p.comboIdxTime > cvars.f('bb_string_reset_time') ? 0 : p.comboIdx, sw: p.sword || data.charSword[p.character], it: p.swordItem ?? data.charSwordItem[p.character], lk: p.look ?? data.defaultLook[p.character], cc: p.pickColor ?? undefined, score: p.score, kn: p.kneeling, fz: p.frozen,
+        id: p.id, ar: p.arena, n: p.name, c: p.character, o: p.origin.map(rnd), v: p.vel.map(rnd), y: rnd(p.yaw), p: rnd(p.pitch), hp: p.health, al: p.alive, g: p.onGround, st: world.stanceNow(p), gs: p.stance, ci: world.time - p.comboIdxTime > cvars.f('bb_string_reset_time') ? 0 : p.comboIdx, sw: p.sword || data.charSword[p.character], it: p.swordItem ?? data.charSwordItem[p.character], lk: p.look ?? data.defaultLook[p.character], cc: p.pickColor ?? undefined, score: p.score, kn: p.kneeling, fz: p.frozen,
         hs: p.hitstop > 0 ? 1 : 0, an: { wr: an.wr ? rnd3(an.wr) : undefined, b: an.base, bc: rnd3(an.baseCycle), u: an.upper, uc: rnd3(an.upperCycle), mx: rnd3(an.mx), my: rnd3(an.my), sp: rnd(an.speed), af: an.armsFrom, ch: an.charge && [an.charge[0], an.charge[1], rnd3(an.charge[2]), rnd3(an.charge[3]), rnd3(an.charge[4])], ld: an.land && [rnd3(an.land[0]), rnd3(an.land[1])], lg: rnd3(an.legs), tl: an.touch && [an.touch[0], rnd3(an.touch[1]), rnd3(an.touch[2])] },
         a: p.act ? { th: p.act.kind === 'throwweapon' && !p.act.thrown ? 1 : 0, n: p.act.name, ph: p.act.phase, ti: p.act.tier, ct: p.act.chargeTier, l: rnd(Math.max(0, p.act.lock)), cf: p.act.phase === 'charge' && p.act.chargeTotal > 0 ? rnd3(Math.min(1, p.act.t / p.act.chargeTotal)) : 0, ce: p.act.phase === 'charge' ? rnd3(p.act.t) : 0, tr: p.act.trCount > 0 && p.act.bladeRing?.length && !p.act.trDone ? 1 : 0, pw: (p.act.kind === 'parry' || p.act.kind === 'kneelparry') && p.act.t <= p.act.parryWindow ? 1 : 0 } : null,
       };
     }),
-    duel: { s: d.state, tm: rnd(Math.max(0, d.timer)), r: d.round, w: d.wins, res: d.results, f: d.fighters, win: d.winner, max: cvars.f('vs_duel_rounds') },
+    arenas: world.duels.map((d) => ({ s: d.state, tm: rnd(Math.max(0, d.timer)), r: d.round, w: d.wins, res: d.results, f: d.fighters, win: d.winner, max: cvars.f('vs_duel_rounds'), n: d.name, tn: d.ent?.targetname, q: d.queue.map((p) => [p.id, p.name, p.unready ? 1 : 0, p.score, p.losses ?? 0, p.ping ?? 0]),
+      sp: [...conns].filter((c) => c.player && (c.player.viewArena ?? 0) === d.index && !world.duels.some((x) => x.queue.includes(c.player))).map((c) => [c.player.id, c.player.name, 0, 0, 0, c.player.ping ?? 0]) })),
   };
 }
 
@@ -169,7 +198,7 @@ const server = http.createServer((req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   if (path === '/api/info') {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist, desc: data.charText[k], menuIdle: v.menuidleanim, menuSelect: v.menuselectanim }])), swords: SWORD_LABELS, swordNames: Object.fromEntries(Object.keys(SWORD_LABELS).map((k) => [k, SWORD_LABELS[k].replace(/ \(.*/, '')])), charSword: data.charSword, charSwordItem: data.charSwordItem, swordItems: data.swordItems, lookItems: data.lookItems, defaultLook: data.defaultLook, throwables: data.throwables, charThrowable: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, v.throwableweapon])), swordSounds: Object.fromEntries(Object.entries(data.swordTypes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([n]) => n.startsWith('sound')))])), strings: Object.fromEntries(Object.keys(data.characters).map((k) => [k, [0, 1, 2, 3].map((st) => { const f = data.stanceFor(k, st)?.forward; return (f?.['action[]'] || [f?.action]).filter(Boolean).length; })])), bot: args.bot }));
+    res.end(JSON.stringify({ map: args.map, characters: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, { name: v.unlocalizedname || k, model: v.model.replace(/\\/g, '/'), color: v.colorlist, desc: data.charText[k], menuIdle: v.menuidleanim, menuSelect: v.menuselectanim }])), tracers: data.tracers, swords: SWORD_LABELS, swordNames: Object.fromEntries(Object.keys(SWORD_LABELS).map((k) => [k, SWORD_LABELS[k].replace(/ \(.*/, '')])), charSword: data.charSword, charSwordItem: data.charSwordItem, swordItems: data.swordItems, lookItems: data.lookItems, defaultLook: data.defaultLook, throwables: data.throwables, charThrowable: Object.fromEntries(Object.entries(data.characters).map(([k, v]) => [k, v.throwableweapon])), swordSounds: Object.fromEntries(Object.entries(data.swordTypes).map(([k, v]) => [k, Object.fromEntries(Object.entries(v).filter(([n]) => n.startsWith('sound')))])), strings: Object.fromEntries(Object.keys(data.characters).map((k) => [k, [0, 1, 2, 3].map((st) => { const f = data.stanceFor(k, st)?.forward; return (f?.['action[]'] || [f?.action]).filter(Boolean).length; })])), bot: args.bot }));
     return;
   }
   if (path.startsWith('/game/')) {
@@ -206,7 +235,7 @@ setInterval(() => {
     acc -= TICK;
     tickNo++;
     if (world.events.length) { const ev = world.events.splice(0); for (const c of conns) c.send({ t: 'ev', ev }); }
-    if (tickNo % 2 === 0) { const s = snapshot(); for (const c of conns) c.send(s); }
+    if (tickNo % 2 === 0) { const s = snapshot(); for (const c of conns) c.send({ ...s, duel: s.arenas[c.player?.arena ?? 0], pv: c.player && world.players.includes(c.player) && c.player.alive ? world.previewAttack(c.player) : null }); }
   }
 }, 5);
 server.listen(+args.port, args.host, () => console.log(`duel server listening on http://${args.host ? args.host : 'localhost'}:${args.port}${args.bot ? ' (bot enabled)' : ''}`));
