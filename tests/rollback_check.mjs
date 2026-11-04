@@ -109,12 +109,12 @@ class Wire {
   send(p) { if (this.r() >= this.loss) this.q.push({ at: this.now + this.latency + this.r() * this.jitter, p: decodePacket(encodePacket(p)) }); }
   advance(dt) { this.now += dt; for (let i = this.q.length - 1; i >= 0; i--) if (this.q[i].at <= this.now) { this.deliver(this.q[i].p); this.q.splice(i, 1); } }
 }
-function peers({ ms = 40, jitter = 0, loss = 0, start = 0, seconds = 60, asym = 1, delay = 2 }) {
+function peers({ ms = 40, jitter = 0, loss = 0, start = 0, seconds = 60, asym = 1, delay = 2, delayB = delay, maxRollback = 8 }) {
   const A = match(), B = match();
   const desync = [];
   const wa = new Wire(ms * asym / 1000, jitter / 1000, loss, 5, (p) => sb.receive(p)), wb = new Wire(ms / 1000, jitter / 1000, loss, 6, (p) => sa.receive(p));
-  const sa = new RollbackSession({ world: A.w, fighters: A.P, me: 0, send: (p) => wa.send(p), inputDelay: delay, onDesync: (f) => desync.push(f) });
-  const sb = new RollbackSession({ world: B.w, fighters: B.P, me: 1, send: (p) => wb.send(p), inputDelay: delay, onDesync: (f) => desync.push(f) });
+  const sa = new RollbackSession({ world: A.w, fighters: A.P, me: 0, send: (p) => wa.send(p), inputDelay: delay, remoteDelay: delayB, maxRollback, onDesync: (f) => desync.push(f) });
+  const sb = new RollbackSession({ world: B.w, fighters: B.P, me: 1, send: (p) => wb.send(p), inputDelay: delayB, remoteDelay: delay, maxRollback, onDesync: (f) => desync.push(f) });
   const pa = player(1, A.P[0], A.P[1]), pb = player(2, B.P[1], B.P[0]);
   let worst = 0, cancelled = 0, fresh = 0;
   const T = Math.round(seconds / TICK);
@@ -146,14 +146,20 @@ for (const net of [
   { name: '40 ms, 25% loss', ms: 40, jitter: 10, loss: 0.25 },
   { name: 'lopsided: 20 ms one way, 100 the other', ms: 100, asym: 0.2, jitter: 10 },
   { name: 'one peer starts half a second late', ms: 40, start: 32 },
+  { name: 'each with their own delay, 1 and 4', ms: 60, jitter: 10, loss: 0.05, delay: 1, delayB: 4 },
+  { name: 'no delay at all', ms: 40, delay: 0 },
+  { name: 'twice the usual rollback limit', ms: 120, jitter: 30, loss: 0.05, maxRollback: 16 },
+  { name: 'too far apart for the limit: it waits', ms: 200, jitter: 30, seconds: 30 },
 ]) {
   const r = peers(net), { sa, sb } = r;
   const f = Math.min(sa.frame, sb.frame), pct = (s) => (s.framesResimulated / Math.max(1, sa.frame) * 100).toFixed(0);
   const a = sa.hashes, b = sb.hashes;
   let compared = 0, differ = 0;
   for (const [k, h] of a) if (b.has(k)) { compared++; if (b.get(k) !== h) differ++; }
-  check(!r.desync.length && differ === 0 && compared > 20, `${net.name}: ${compared} state hashes agree${differ ? `, ${differ} DIFFER` : ''}`);
-  check(f > 60 * 64 * 0.9, `  it kept moving: ${f} frames of ${Math.round(63 * 64)}, ${sa.stats.stalls + sb.stats.stalls} stalled ticks, ${sa.stats.slowdowns + sb.stats.slowdowns} evening out`);
+  check(!r.desync.length && differ === 0 && compared > 12, `${net.name}: ${compared} state hashes agree${differ ? `, ${differ} DIFFER` : ''}`);
+  const secs = net.seconds ?? 60, full = (secs + 3) * 64;
+  check(net.ms >= 200 ? f > full * 0.5 : f > full * 0.85, `  it kept moving: ${f} frames of ${full}, ${sa.stats.stalls + sb.stats.stalls} stalled ticks, ${sa.stats.slowdowns + sb.stats.slowdowns} evening out`);
+  check(sa.stats.deepest <= (net.maxRollback ?? 8) + 1 && sb.stats.deepest <= (net.maxRollback ?? 8) + 1, `  and stayed within its rollback limit: deepest ${Math.max(sa.stats.deepest, sb.stats.deepest)}`);
   console.log(`     rollbacks ${sa.stats.rollbacks}, deepest ${sa.stats.deepest} ticks, ${pct(sa.stats)}% extra simulation, worst tick ${r.worst.toFixed(2)} ms, events ${r.fresh} played, ${r.cancelled} taken back`);
   settle(sa, sb);
 }

@@ -22,13 +22,15 @@ const latin1 = (b) => { let s = ''; for (let i = 0; i < b.length; i += 8192) s +
  * @param {function(string): Promise<Uint8Array|null>} o.read Reads a game file.
  * @param {object} o.hello This player: name, character, item, look, color, options.
  * @param {Array} [o.iceServers] STUN or TURN servers.
+ * @param {number} [o.inputDelay] This player's input delay, in ticks.
+ * @param {number} [o.maxRollback] The furthest back this player's game rewinds, in ticks.
  * @param {function(): number[]} o.input This player's buttons, yaw and pitch right now.
  * @param {function(object): void} o.onSnapshot Gets a snapshot, as from a server, each frame.
  * @param {function(object): void} o.onEvent Gets each event.
  * @param {function(string, boolean): void} o.onStatus Told what's going on, and whether it's an error.
  * @returns {Promise<object>} myId, session, world.
  */
-export async function startP2PMatch({ relay, room, bsp, mapBytes, read, hello, iceServers = [], input, onSnapshot, onEvent, onStatus }) {
+export async function startP2PMatch({ relay, room, bsp, mapBytes, read, hello, iceServers = [], inputDelay = 2, maxRollback = 8, input, onSnapshot, onEvent, onStatus }) {
   onStatus('Loading the fight...');
   const seen = new Map();
   const bytes = async (p) => { const b = await read(p); if (b && !seen.has(p)) seen.set(p, fnv(new Uint8Array(b))); return b ? new Uint8Array(b) : null; };
@@ -42,7 +44,7 @@ export async function startP2PMatch({ relay, room, bsp, mapBytes, read, hello, i
   for (const url of SIM_CODE) seen.set(url, fnv(new TextEncoder().encode((await (await fetch(url)).text()).replace(/\r/g, ''))));
   seen.set('map', fnv(mapBytes));
   const build = fnv(new TextEncoder().encode([...seen].sort((a, b) => (a[0] < b[0] ? -1 : 1)).join('\n'))).toString(16);
-  const peer = await connectPeer({ relay, room, build, hello, iceServers, onStatus: (s) => onStatus(s, false) });
+  const peer = await connectPeer({ relay, room, build, hello: { ...hello, delay: inputDelay }, iceServers, onStatus: (s) => onStatus(s, false) });
 
   // Both fighters from what each said about themselves, in seat order, the same on both sides
   const sides = peer.seat === 0 ? [hello, peer.other] : [peer.other, hello];
@@ -60,7 +62,9 @@ export async function startP2PMatch({ relay, room, bsp, mapBytes, read, hello, i
   world.duels[0].seat(P);
   const me = peer.seat, myId = P[me].id;
   const session = new RollbackSession({
-    world, fighters: P, me,
+    world, fighters: P, me, inputDelay, maxRollback,
+    // what the other player's frames start from, so each can choose their own
+    remoteDelay: Number.isInteger(peer.other?.delay) ? Math.max(0, Math.min(8, peer.other.delay)) : 2,
     send: (p) => peer.send(encodePacket(p)),
     onDesync: (f) => { console.error(`desync at frame ${f}`); onStatus(`The two games no longer match (frame ${f}). This is a bug: results from here on can't be trusted.`, true); },
   });

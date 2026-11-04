@@ -23,7 +23,7 @@ try {
     const pg = await b.newPage({ viewport: { width: 960, height: 540 } });
     pg.on('pageerror', (e) => errs[i].push(e.message));
     pg.on('console', (m) => { if (m.type() === 'error' && !/404/.test(m.text())) errs[i].push(m.text().slice(0, 200)); });
-    await pg.goto(`http://127.0.0.1:${PORTS[i]}/?nolock=1&vol=0&char=${i ? 'ryoku' : 'knight'}&p2p=check&relay=ws://127.0.0.1:${RELAY}`);
+    await pg.goto(`http://127.0.0.1:${PORTS[i]}/?nolock=1&vol=0&char=${i ? 'ryoku' : 'knight'}&p2p=check&relay=ws://127.0.0.1:${RELAY}&delay=${i ? 3 : 2}&rollback=8`);
     await pg.waitForFunction(() => document.getElementById('status')?.textContent === 'Ready.', { timeout: 240000 });
     pages.push(pg);
   }

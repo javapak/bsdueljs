@@ -44,19 +44,23 @@ export class RollbackSession {
    * @param {Player[]} o.fighters The two fighters, in the same order on both peers.
    * @param {number} o.me This peer's index in `fighters`.
    * @param {function(object): void} o.send Sends a packet to the other peer; it may be lost, late or out of order.
-   * @param {number} [o.inputDelay] Ticks before a press takes effect, which gives it time to arrive and cuts down on rollbacks.
-   * @param {number} [o.maxRollback] The furthest back it can rewind. Past this it waits for the other peer.
+   * @param {number} [o.inputDelay] Ticks before this peer's presses take effect, which gives them time to arrive and cuts down on rollbacks.
+   * 2 ticks is 31 ms, about Slippi's default of 2 frames at 60 fps.
+   * @param {number} [o.remoteDelay] The other peer's, which needn't be the same.
+   * @param {number} [o.maxRollback] The furthest back it can rewind. Past this it waits for the other peer, since a short freeze reads better than
+   * a large snap. 8 ticks is 125 ms, about Slippi's limit.
    * @param {function(number): void} [o.onDesync] Called with the frame if the peers' states ever differ.
    */
-  constructor({ world, fighters, me, send, inputDelay = 2, maxRollback = 16, onDesync = () => {} }) {
+  constructor({ world, fighters, me, send, inputDelay = 2, remoteDelay = inputDelay, maxRollback = 8, onDesync = () => {} }) {
     Object.assign(this, { world, fighters, me, send, inputDelay, maxRollback, onDesync });
     this.them = 1 - me;
     this.frame = 0;
     // Each side's inputs by frame. Everyone starts neutral for the frames before the first press can land.
     this.inputs = [new Map(), new Map()];
-    for (let f = 0; f < inputDelay; f++) { this.inputs[0].set(f, NEUTRAL); this.inputs[1].set(f, NEUTRAL); }
+    for (let f = 0; f < inputDelay; f++) this.inputs[me].set(f, NEUTRAL);
+    for (let f = 0; f < remoteDelay; f++) this.inputs[1 - me].set(f, NEUTRAL);
     this.localHigh = inputDelay - 1; // newest local input
-    this.remoteConfirmed = inputDelay - 1; // every remote input up to here is known
+    this.remoteConfirmed = remoteDelay - 1; // every remote input up to here is known
     this.peerAck = inputDelay - 1; // every local input up to here has reached them
     this.remoteFrame = 0; this.remoteAdvantage = 0;
     this.used = new Map(); // what was assumed for the other peer, by frame
