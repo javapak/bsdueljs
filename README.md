@@ -12,7 +12,7 @@ This does **not** use or connect to the original `client.dll`/`server.dll`, and 
     node server/main.mjs --game "<install>" --bot                  # practice against a bot on duel_temple
     node server/main.mjs --game "<install>" --map duel_winter      # no bot: walk around until a second person joins
 
-`<install>` is your Blade Symphony folder, the one holding `berimbau`. You can leave out `--game` only if this repo sits two folders inside it.
+`<install>` is your Blade Symphony folder, the one holding `berimbau`. You can leave out `--game` only if this repo sits two levels within that folder...ex "./Blade Symphony/some_folder/another_folder/bsdueljs". I should probably fix this but that is where relatively speaking as my current working directory and here we are.
 
 Open http://localhost:27015 in a WebGPU browser, pick a character, and confirm. You start out watching: press `R` to join the arena's queue, then click into the window to
 capture the mouse. Other options: `--port`, `--host`.
