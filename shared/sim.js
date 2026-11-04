@@ -29,8 +29,8 @@ import { MASK_PLAYERSOLID } from './bsp.js';
 export const TICK = 1 / 64;
 // [R 18037b1eb] the player reset sets the entity gravity field to 3, multiplying sv_gravity
 const PLAYER_GRAVITY_SCALE = 3;
-// [R 18037b470] these presses are remembered; a new one replaces the old. The time is the client's bb_ibt default.
-const BUFFERED_BUTTONS = 0x428807, INPUT_BUFFER_TIME = 0.33;
+// [R 18037b470] these presses are remembered; a new one replaces the old, for the client's bb_ibt [R 180333c79].
+const BUFFERED_BUTTONS = 0x428807;
 /**
  * [R 180454b60, 180450a80] Source's Gain() through a cosine; sharpness 0 makes Bias() pow(x, 0), so this is 0.5
  * The curve gravity follows during a jump.
@@ -96,6 +96,8 @@ export class Player {
     this.score = 0;
     this.stance = 0;
     this.arena = 0;
+    // [R 180333bcd] the client's bb_gae, bb_sde and bb_ibt. A person's arrive when they join; bots and tests don't double tap.
+    this.options = { gae: false, sde: false, ibt: 0.33 };
     this.reset([0, 0, 0], 0);
   }
 
@@ -108,13 +110,13 @@ export class Player {
     Object.assign(this, {
       origin: [...origin], vel: [0, 0, 0], yaw, viewYaw: yaw, pitch: 0, onGround: false,
       health: 100, alive: true, act: null, hitstop: 0, buttons: 0, prevButtons: 0,
-      jumpCooldown: 0, jumpGravityT: 0, comboIdx: 0, comboIdxTime: 0, comboCount: 0, comboResetTime: 0,
+      jumpCooldown: 0, jumpGravityT: 0, comboIdx: 0, comboDeadline: -1, comboCount: 0, comboResetTime: 0,
       hitsThisSwing: 0, lastHitTime: -100, multiBlock: 0, turnRate: 0, turnRateTime: 0, blockCooldown: 0,
       moveCooldown: 0, dashCooldown: 0, animTime: 0, moveAmt: 0, frozen: false, forceImpulse: null,
       kneeling: false, airState: 0, airT: 0, landT: 0, landCycle: 0, airLandCycle: 0, moveCycle: 0, moveSeq: null, chargeCycle: 0, chargeFade: 0, chargeRun: 0, chargeAnims: null,
       bufferMask: 0, bufferT: 0, airStance: false, queuedStance: -1, touchdown: null,
       wallRuns: 0, wallAngle: 0, wallDir: [1, 0, 0], throwCooldown: 0,
-      sheathed: false, sheatheT: 0, sheatheDur: 0, sheatheW: 0, sheatheWas: false, gripW: 0, gripCycle: 0,
+      tapState: 0, tapT: 0, sheathed: false, sheatheT: 0, sheatheDur: 0, sheatheW: 0, sheatheWas: false, gripW: 0, gripCycle: 0,
     });
   }
 
@@ -227,7 +229,8 @@ export class World {
     if (p.onGround) p.wallRuns = 0; // [R 180379e9f; that the ground is what clears it is I]
     p.turnRateTime = Math.max(0, p.turnRateTime - dt);
     const pressed = p.pressed & BUFFERED_BUTTONS;
-    if (pressed) { p.bufferMask = pressed; p.bufferT = INPUT_BUFFER_TIME; }
+    if (pressed) { p.bufferMask = pressed; p.bufferT = p.options.ibt; }
+    p.tapT = Math.max(0, p.tapT - dt);
     // [R 18037aa00] both fighters freeze during hitstop; [R 180388b60] the multi-hit timer doesn't count it
     if (p.hitstop > 0) { p.hitstop -= dt; p.lastHitTime += dt; return; }
     p.animTime += dt;
@@ -304,8 +307,9 @@ export class World {
    */
   dispatchInput(p) {
     if (p.kneeling) { this.dispatchKneeling(p); return; }
-    if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); this.startEvade(p, 'Shuffle'); return; }
-    if (p.wants(IN.GRAB) && this.canGrab(p)) { p.use(IN.GRAB); this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
+    if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); p.tapState = p.tapT = 0; this.startEvade(p, 'Shuffle'); return; }
+    if (this.doubleTap(p)) return;
+    if ((p.wants(IN.GRAB) || this.attackBlockGrab(p)) && this.canGrab(p)) { p.use(IN.GRAB); this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
     if (p.wants(IN.ROLL) && this.canChargeDash(p)) { p.use(IN.ROLL); p.dashCooldown = this.cv.f('bb_dash_delay'); this.startEvade(p, 'AirDash'); return; }
     if (p.wants(IN.ROLL) && this.canEvade(p) && p.sheatheT <= 0) { p.use(IN.ROLL); this.startEvade(p, 'Roll'); return; }
     if (this.tryWallRun(p)) return;
@@ -320,6 +324,42 @@ export class World {
       return;
     }
     this.dispatchAttack(p);
+  }
+
+  /**
+   * [R 180377220] bb_sde: letting go of a direction and pressing it again, within half a second of the first press, shuffles.
+   * Only runs while a shuffle could start. tapState is the direction plus one, with 8 once one has been let go.
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether it shuffled.
+   */
+  doubleTap(p) {
+    if (!p.options.sde) return false;
+    const dirOf = (b) => { const l = b & IN.LEFT, r = b & IN.RIGHT; return l && !r ? 3 : r && !l ? 1 : b & IN.FORWARD ? 0 : b & IN.BACK ? 2 : 8; };
+    let done = false;
+    if (this.canEvade(p)) {
+      const released = dirOf(p.prevButtons & ~p.buttons), pressed = dirOf(p.pressed);
+      if (released !== 8) p.tapState |= 8;
+      if (pressed !== 8) {
+        if (p.tapState & 8 && p.tapT > 0 && pressed === (p.tapState & ~8) - 1) { this.startEvade(p, 'Shuffle'); done = true; }
+        p.tapState = pressed + 1;
+        p.tapT = 0.5;
+      }
+    }
+    if (p.tapT <= 0) p.tapState = 0; // [R 1803772e5]
+    return done;
+  }
+
+  /**
+   * [R 180375135] bb_gae: attack and block together grab, once the block cooldown allows. So does block while charging an attack
+   * [R 180374320], and attack while charging a feint or blocking.
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether these buttons ask for a grab.
+   */
+  attackBlockGrab(p) {
+    if (!p.options.gae) return false;
+    const b = p.buttons, a = p.act, charging = !!a?.attack && a.phase === 'charge', feinting = a?.id === 3;
+    return (charging && !!(b & IN.BLOCK) && !feinting) || (!!(b & IN.BLOCK) && !!(b & IN.ATTACK) && p.blockCooldown <= 0)
+      || (charging && !!(b & IN.ATTACK) && feinting) || (a?.kind === 'block' && !!(b & IN.ATTACK));
   }
 
   /**
@@ -422,6 +462,7 @@ export class World {
       this.emit({ type: 'feint', id: p.id });
     } else this.startAttack(p, true);
     p.comboIdx = 0;
+    p.comboDeadline = -1;
   }
 
   /**
@@ -904,9 +945,8 @@ export class World {
     if (!p.wants(IN.ATTACK)) return false;
     const percent = this.cv.f(`bb_side_cancel_percent_${['balanced', 'fast', 'heavy', 'air'][a.stanceType]}`);
     if (percent <= 0 || percent * a.lockDur <= a.lock) return false;
-    const f = this.data.stanceFor(p.character, a.stanceType)?.forward;
-    const strings = (f?.['action[]'] || [f?.action]).filter(Boolean).length;
-    if (a.comboIdx >= strings) return false;
+    // [R 18034695a] the string as it stands now, so the swing that finishes it can't be cancelled
+    if (p.comboIdx >= this.data.stringLength(p.character, a.stanceType)) return false;
     const sword = this.sword(p), dir = this.moveDir(p);
     if (flag(sword.cansidecancel) && ((a.dir === 3 && dir === 1) || (a.dir === 1 && dir === 3))) return true;
     return flag(sword.canstancecancel) && a.stanceAtRelease !== this.stanceNow(p);
@@ -1029,7 +1069,8 @@ export class World {
   startAttack(p, feint = false) {
     const stance = this.stanceNow(p);
     const dir = this.moveDir(p);
-    if (this.time - p.comboIdxTime > this.cv.f('bb_string_reset_time')) p.comboIdx = 0; // [R 180374916] checked as an attack starts
+    p.comboIdx = this.stringIndex(p); // [R 180374916]
+    p.comboDeadline = -1;
     const def = p.kneeling ? this.data.action('RecoveryAttack') : this.data.attackFor(p.character, stance, dir, p.comboIdx);
     if (!def) return;
     this.setSheathed(p, false); // [R 1803749ee, 1803496c3] an attack or feint draws at once, cutting off a sheathe
@@ -1070,7 +1111,6 @@ export class World {
    * [R client 1802ba0d0] What the attack preview shows: the swing under way, what the charge would release, or with no
    * action going, the first tier of what the stance, keys and string would start. Nothing during any other action or
    * while kneeling.
-   * [I] the string restarting after bb_string_reset_time counts here too, as it will once the attack starts.
    * @param {Player} p The fighter.
    * @returns {{a: string, l: string}|null} The animation and its lower body.
    */
@@ -1080,7 +1120,7 @@ export class World {
     let def, tier = 0;
     if (a && !a.attack) return null;
     if (a) { def = a.def; tier = a.phase === 'swing' ? a.tier : this.chargedTier(p); }
-    else def = this.data.attackFor(p.character, this.stanceNow(p), this.moveDir(p), this.time - p.comboIdxTime > this.cv.f('bb_string_reset_time') ? 0 : p.comboIdx);
+    else def = this.data.attackFor(p.character, this.stanceNow(p), this.moveDir(p), this.stringIndex(p));
     const t = def?.['tier' + (tier + 1)] ?? def?.tier1;
     return t?.animation ? { a: t.animation, l: t.animation_lowerbody } : null;
   }
@@ -1114,12 +1154,31 @@ export class World {
     });
     // [R 180349300] no tracer, no string advance
     if (a.feint) { a.tracer = []; a.trCount = 0; a.trDone = true; return; }
-    p.comboIdx++; // [R 180374120] attackFor wraps it at the stance's string length
-    p.comboIdxTime = this.time;
+    this.advanceString(p, a);
     // [R 180346ced] a sword that doesn't knock down plays the soft sound
     if (tier === 2) this.emit({ type: 'charge_tier', id: p.id, tier, soft: !flag(this.sword(p).tier3shouldknockdown) });
     a.trCount = a.tracer.length;
     this.emit({ type: 'swing', id: p.id, tier, stance: a.stanceType, dir: a.dir });
+  }
+
+  /**
+   * [R 180374916] Where the string stands: bb_string_reset_time after a swing's release it's back at the start. An attack charging
+   * holds that clock off [R 1803453a4].
+   * @param {Player} p The fighter.
+   * @returns {number} The string index.
+   */
+  stringIndex(p) { return p.comboDeadline > 0 && p.comboDeadline < this.time ? 0 : p.comboIdx; }
+
+  /**
+   * [R 180347230, 180374120, 180346790] A swing moves the string on, side attacks if bb_string_sideattack_advance says so. So a
+   * string of three runs 0, 1, 2, 3, 1, 2, 3: at its length the index plays the first action, and that one goes on to 1.
+   * @param {Player} p The fighter.
+   * @param {Action} a The swing.
+   */
+  advanceString(p, a) {
+    if ((a.dir & ~2) !== 0 && !this.cv.f('bb_string_sideattack_advance')) return;
+    p.comboIdx = p.comboIdx >= this.data.stringLength(p.character, a.stanceType) ? 1 : p.comboIdx + 1;
+    p.comboDeadline = this.time + this.cv.f('bb_string_reset_time');
   }
 
   /**
@@ -1917,7 +1976,7 @@ export class World {
       if (cr.scaled) { att.vel[0] += cr.attackerPush[0]; att.vel[1] += cr.attackerPush[1]; }
     }
     // [R 18036d066] the victim's string starts over; a condition just before this wasn't identified
-    if (cv.f('bb_string_reset') && (result === C.HIT_LANDED || result === C.HIT_BLOCKED || result === C.HIT_GUARD_BROKEN)) vic.comboIdx = 0;
+    if (cv.f('bb_string_reset') && (result === C.HIT_LANDED || result === C.HIT_BLOCKED || result === C.HIT_GUARD_BROKEN)) { vic.comboIdx = 0; vic.comboDeadline = -1; } // [R 18036d08e]
     dmg.damage = this.dashDamage(vic, dmg.damage);
     const o = C.resolveHitOutcome({
       defense, resultAfterDefense: result, blockReturnedTrue: blockedTrue, attackerDirection: a.dir, attackerTier: a.tier, attackerActionId: a.id, hitsThisSwing: att.hitsThisSwing,

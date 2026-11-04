@@ -208,7 +208,7 @@ export class GameData {
    * @param {string} charKey Character key.
    * @param {number} stanceType 0 balanced, 1 fast, 2 heavy, 3 air.
    * @param {number} dir 0 forward, 1 right, 2 back, 3 left.
-   * @param {number} comboIdx Position in the string; wraps at its length.
+   * @param {number} comboIdx Position in the string. [R 180380d00] One at or past the end is the first action.
    * @returns {object|null} The attack's action script.
    */
   attackFor(charKey, stanceType, dir, comboIdx) {
@@ -220,10 +220,20 @@ export class GameData {
       const f = s.forward;
       if (f) {
         const list = f['action[]'] || (f.action ? [f.action] : []);
-        name = list[comboIdx % Math.max(1, list.length)];
+        name = list[comboIdx < list.length ? comboIdx : 0];
       }
     }
     return name ? this.action(name) : null;
+  }
+  /**
+   * [R 180380de0] How many actions the stance's forward string has.
+   * @param {string} charKey Character key.
+   * @param {number} stanceType 0 balanced, 1 fast, 2 heavy, 3 air.
+   * @returns {number} The count, 0 if the stance has none.
+   */
+  stringLength(charKey, stanceType) {
+    const f = this.stanceFor(charKey, stanceType)?.forward;
+    return f ? (f['action[]'] || (f.action ? [f.action] : [])).length : 0;
   }
   /**
    * @param {string} charKey Character key, for its default sword.

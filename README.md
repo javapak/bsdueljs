@@ -24,7 +24,7 @@ can reach the port can download files from your game folder. It has no authentic
 
 Controls: WASD move (also picks the attack direction), Mouse1 attack (hold to charge), Mouse2 block,
 1/2/3 fast/balanced/heavy, Space jump, Ctrl roll, Shift shuffle, Q grab (press while grabbed to break free), Alt walk.
-E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue, M customize, Tab scoreboard. These follow the game's `cfg/config_default.cfg`.
+E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue, M customize, Tab scoreboard, Esc pause menu, mouse wheel next or previous stance. These are the defaults in the game's `cfg/config_default.cfg`, and can be rebound in the pause menu.
 
 ## Layout
 
@@ -35,7 +35,7 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `shared/bsp.js`, `mdl.js`, `kv.js`, `gamedata.js` | game file formats and script loading |
 | `shared/bot.js` | practice bot |
 | `server/main.mjs` | HTTP, WebSocket, game loop |
-| `client/` | WebGPU renderer, VTF decoding, input, HUD, audio |
+| `client/` | WebGPU renderer, VTF decoding, input, HUD, audio, third person camera (`camera.js`), pause menu (`pausemenu.js`, `settings.js`) |
 | `tests/` | see below |
 
 ## Tests
@@ -57,6 +57,7 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `node tests/dash_check.mjs "<install>"` | the charge dash: when it's allowed, what it does, and the vulnerable time after it |
 | `node tests/preview_check.mjs "<install>"` | the attack preview: the attack it names, its path, fades and target highlight |
 | `node tests/wall_check.mjs "<install>"` | wall run, slide, wall jump and run limit, plus throwables: timing, hits, blocks, cancel and delay |
+| `node tests/options_check.mjs "<install>"` | the per-fighter input options: double tap shuffle, attack + block grab, and the input buffer |
 | `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
 | `node tests/net_check.mjs "<install>"` | full match between two real WebSocket clients; path traversal rejected |
@@ -103,6 +104,18 @@ Skin, mask, cape and one attachment per slot come from `scripts/items.json`, cho
 
 The fighter models have no heads, so a mask always shows. That the default is `models/masks/default_<character>` is inferred from the names. Masks and capes don't collide with anything, and workshop items aren't loaded.
 
+## Pause menu and options
+
+`Esc` opens `client/pausemenu.js`, built at runtime from the game's `ingamemainmenu_mp.res`, `keyboardmouse.res`, `keybindings` (`scripts/kb_act.lst`), `video.res`, `advancedvideo.res`, `berimbaugameoptions.res` and `cameraoptions.res`, with the game's strings and slider ranges. Settings keep their cvar names and persist in the browser (`client/settings.js`), with defaults read from `client.dll`. There's no pausing, since it's a live match. Options with nothing behind them here stay on screen, turned off, and a token no string table has (`GameUI_KeyboardMouse`) reads as its own words [I].
+
+**Camera:** `client/camera.js` ports `client.dll`'s third person camera step by step: offsets, the roll and shuffle ease, jump trail and tilt, ground lead and FOV, hitstop push, action bank, body motion from the `chest` attachment, lag, and the eased floor and wall collision. The server gets the camera's angles plus `bb_cam_thirdperson_pitch_viewoffset`, so the view sits 20 degrees below the aim. FOV is Source's width of a 4:3 view. **Inferred:** the eye at 64 units, from Source's default view vectors. **Not ported:** a clamp that keeps the point the camera looks from within two bounds read from the fighter (180280065, the `0xac0` and `0xac8` virtuals), which weren't identified. If they're the 72-unit hull, Camera Height above +8 does nothing in the live game and does here. Also `bb_cam_master_turn_animation_speed`'s turn animation, and every other camera mode.
+
+**Input:** sensitivity, `m_yaw`, `m_pitch` (reverse mouse), `m_customaccel` 3 with its exponent, and raw input as the browser's `unadjustedMovement` where it has it. Double tap shuffle (`bb_sde`) and attack + block grab (`bb_gae`) and `bb_ibt` go to the server per fighter, as the game's do. Bots and tests default to no double tap. Next and previous stance run fast, balanced, heavy and wrap [I: the button handling is read, the order isn't].
+
+**Video:** brightness is an SVG filter applying x^(2.2 / `mat_monitorgamma`) [I: Source's usual ramp, not read from shaderapi]. Resolution sets the render size and the aspect ratio filters that list [I: the list is common modes, not the display's]. Display mode is the browser's fullscreen, without a borderless entry. `cl_csm_enabled_user` turns the cascades off. Filtering is `mat_forceaniso` and takes effect on reload, since materials bind their sampler as they load. **Off, nothing behind them:** power savings, motion blur, ambient occlusion, tonemapping (`bb_fancy_tonemapping` isn't ported), antialiasing, vsync, multicore, shader, effect and model detail, paged pool, streaming, audio, controller, developer console. Model detail's `gpu_mem_level` lives in encrypted `.ekv` files.
+
+**Game options:** attack preview, input buffer, and camera options work. FFA and duel outlines, health bars, the summary screen, spray and workshop are off.
+
 ## How faithful is it?
 
 `shared/sim.js` tags rules in comments: `[V]` verified, `[R addr]` read from `server.dll` at addr but
@@ -117,7 +130,7 @@ charge and swing flow, tracer sampling and its clock, blade pose (move params, p
 * soft collision between fighters (the original feeds a push through move input at strengths that depend on the action; the sim applies one constant push)
 * time-up rule (higher health wins)
 * max health of 100 (assumed; not found in the binary)
-* stance changes, block hold, combo-string reset timing, attacker recoil on a block
+* stance changes, block hold, attacker recoil on a block
 * client-side crossfade timing, and walking borrowing the run cycle's upper body
 * the move input the charge speed scales (`CHARGE_INPUT` in `sim.js`: the formula is recovered, but this one value is a judgment call)
 

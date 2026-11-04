@@ -10,6 +10,7 @@ import { matMul, quatMatrix, rigidInverse } from '/shared/mathx.js';
 import { WorldLighting } from './lighting.js';
 import { propMatrix } from '/shared/phy.js';
 import { Exposure, tonemapSettings } from '/shared/exposure.js';
+import { cvar } from './settings.js';
 
 // LightmappedGeneric and WorldVertexTransition, ported from lightmappedgeneric_ps30. Output is linear light times the
 // tonemap scale (cLightScale.x), which the game's sRGB framebuffer write encodes. CSM shadows aren't in yet.
@@ -584,7 +585,9 @@ export class Renderer {
     this.texCache = new Map();
     this.vmtCache = new Map();
     this.camBuf = device.createBuffer({ size: 336, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.samp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 8 });
+    // [R client 18032e3f6, 18032d835] mat_forceaniso: 0 bilinear, 1 trilinear, more is the anisotropy. Materials bind this as they load.
+    const aniso = cvar('mat_forceaniso'), filtering = { mipmapFilter: aniso ? 'linear' : 'nearest', ...(aniso > 1 ? { maxAnisotropy: aniso } : {}) };
+    this.samp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', ...filtering, addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 8 });
     this.lmSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     this.fxSamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
     this.fallback = this._solid([127, 127, 127, 255]);
@@ -895,7 +898,7 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
   }
 
   resize() {
-    const w = Math.max(1, Math.round(this.canvas.clientWidth * Math.min(devicePixelRatio, 2))), h = Math.max(1, Math.round(this.canvas.clientHeight * Math.min(devicePixelRatio, 2)));
+    const w = this.renderSize?.[0] ?? Math.max(1, Math.round(this.canvas.clientWidth * Math.min(devicePixelRatio, 2))), h = this.renderSize?.[1] ?? Math.max(1, Math.round(this.canvas.clientHeight * Math.min(devicePixelRatio, 2)));
     if (this.canvas.width === w && this.canvas.height === h && this.depth) return;
     this.canvas.width = w; this.canvas.height = h;
     this.depth?.destroy();
@@ -1614,7 +1617,7 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
     const cam = new Float32Array(84);
     cam.set(view.vp, 0); cam.set([...view.eye, 1], 16); cam.set([...(this.sun || [0.3, 0.3, 0.9]), 1], 20); cam.set([0, 0, 0, this.exposure.scale], 24);
     if (view.preview) cam[27] = 1; // no auto exposure on the menu
-    const csmOn = !view.preview && !this.noCSM && this._updateCascades(view);
+    const csmOn = !view.preview && !this.noCSM && !!cvar('cl_csm_enabled_user') && this._updateCascades(view);
     if (csmOn) {
       this.csmSpheres.forEach((s, i) => cam.set(s.m, 28 + i * 16));
       cam.set([...this.lighting.sky.color, 1], 76);

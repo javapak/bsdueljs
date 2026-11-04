@@ -12,6 +12,9 @@ import { createScoreboard } from './scoreboard.js';
 import { Audio } from './audio.js';
 import { parsePhy, Ragdoll } from '/shared/ragdoll.js';
 import { TracerPreview, OPACITY, buildPath } from '/shared/tracerpreview.js';
+import { ThirdPersonCamera } from './camera.js';
+import { createPauseMenu } from './pausemenu.js';
+import { cvar, onCvar, boundTo, loadDefaultBinds } from './settings.js';
 
 const $ = (id) => document.getElementById(id);
 const status = (s, err) => { const e = $('status'); if (!e) return; e.textContent = s; e.className = err ? 'err' : ''; e.style.visibility = s === 'Ready.' ? 'hidden' : ''; };
@@ -104,14 +107,27 @@ const scoreboard = createScoreboard(document.body, {
 });
 const snaps = [];
 const clockOffset = { v: 0, set: false };
-let camYaw = 0, camPitch = 8;
+let camYaw = 0, camPitch = 0, camView = null;
+const thirdPerson = new ThirdPersonCamera((a, b, mn, mx, mask) => bsp.traceBox(a, b, mn, mx, mask));
+let myChest = null;
+let pauseMenu = null;
+/** [R 180333bcd] The options the server keeps per fighter, as it reads them off a client. */
+function sendOptions() { if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'options', gae: !!cvar('bb_gae'), sde: !!cvar('bb_sde'), ibt: cvar('bb_ibt') })); }
+onCvar((name) => { if (name === 'bb_gae' || name === 'bb_sde' || name === 'bb_ibt') sendOptions(); if (name === 'mat_monitorgamma') applyGamma(); });
+/** [I] mat_monitorgamma the way Source's ramp works, x^(2.2 / gamma), as a filter on the finished picture. */
+function applyGamma() {
+  const g = cvar('mat_monitorgamma');
+  for (const id of ['gR', 'gG', 'gB']) $(id).setAttribute('exponent', 2.2 / g);
+  canvas.style.filter = g === 2.2 ? '' : 'url(#gamma)';
+}
+applyGamma();
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name: customize.name, character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
   ws.onclose = () => { myId = null; started = false; customize.show(false); status('Disconnected from server.', true); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.t === 'welcome') { myId = m.id; if (params.has('ready')) sendReady(); }
+    if (m.t === 'welcome') { myId = m.id; sendOptions(); if (params.has('ready')) sendReady(); }
     else if (m.t === 'full') status('Server already has two players.', true);
     else if (m.t === 'snap') {
       snaps.push(m);
@@ -131,42 +147,119 @@ let didInitCam = false, frozen = false;
 
 // ------------------------------------------------------------ input
 const keys = new Set();
-let mouse = 0;
-const KEYMAP = { KeyE: IN.THROW, KeyW: IN.FORWARD, KeyS: IN.BACK, KeyA: IN.LEFT, KeyD: IN.RIGHT, Space: IN.JUMP, ControlLeft: IN.ROLL, ControlRight: IN.ROLL, ShiftLeft: IN.SHUFFLE, ShiftRight: IN.SHUFFLE, KeyQ: IN.GRAB, AltLeft: IN.WALK, Digit1: IN.STANCE_FAST, Digit2: IN.STANCE_BAL, Digit3: IN.STANCE_HEAVY, Digit4: IN.SHEATHE, KeyB: IN.BOW, KeyC: IN.FLOURISH, KeyV: IN.TAUNT, KeyT: IN.SIT };
+/** Reads one of the game's text files, which may be UTF-16. */
+const gameText = async (path) => { const b = new Uint8Array(await fetchGame(path)); return new TextDecoder(b[0] === 0xff && b[1] === 0xfe ? 'utf-16le' : 'latin1').decode(b); };
+loadDefaultBinds(await gameText('cfg/config_default.cfg'));
+// What each of the game's commands holds down, by the names in scripts/kb_act.lst
+const COMMAND_BITS = { '+attack': IN.ATTACK, '+block': IN.BLOCK, '+attack2': IN.THROW, '+forward': IN.FORWARD, '+back': IN.BACK, '+moveleft': IN.LEFT, '+moveright': IN.RIGHT, '+jump': IN.JUMP, '+duck': IN.ROLL, '+shuffle': IN.SHUFFLE, '+grab': IN.GRAB, '+walk': IN.WALK, '+reverse': IN.STANCE_FAST, '+balanced': IN.STANCE_BAL, '+heavy': IN.STANCE_HEAVY, '+sheathe': IN.SHEATHE, '+bow': IN.BOW, '+flourish': IN.FLOURISH, '+taunt': IN.TAUNT, '+sit': IN.SIT };
+// [I] the order the stance keys and the HUD give them. Slots: 1 fast, 0 balanced, 2 heavy.
+const STANCE_ORDER = [1, 0, 2], STANCE_BITS = [IN.STANCE_BAL, IN.STANCE_FAST, IN.STANCE_HEAVY];
+// A wheel notch has no key-up, and neither does a next or previous stance, so they hold their button a couple of ticks
+const pulses = [];
+const pulse = (bit) => pulses.push({ bit, until: performance.now() + 40 });
+/**
+ * @param {number} step 1 for +nextstance, -1 for +prevstance.
+ */
+function cycleStance(step) {
+  const now = snaps.at(-1)?.players.find((p) => p.id === myId)?.gs ?? 0;
+  pulse(STANCE_BITS[STANCE_ORDER[(STANCE_ORDER.indexOf(now) + step + 3) % 3]]);
+}
+/**
+ * Runs a key's one-shot command, if it has one.
+ * @param {string} code The key.
+ * @param {boolean} repeat An auto-repeat rather than a real press.
+ * @returns {boolean} Whether it was one.
+ */
+function runCommand(code, repeat) {
+  const cmd = boundTo(code);
+  if (cmd === 'bb_show_customization') { if (started) openCustomize(); return true; }
+  if (cmd === 'vs_ready') { if (started && !repeat) sendReady(); return true; }
+  if (cmd === '+score') { if (started) scoreboard.show(true, spectating); return true; }
+  if (cmd === '+nextstance' || cmd === '+prevstance') { if (!repeat) cycleStance(cmd === '+nextstance' ? 1 : -1); return true; }
+  return false;
+}
 addEventListener('keydown', (e) => {
   // bb_show_customization: M opens it in a match, and it takes over the screen and the keys until it closes
   if (customize.open) { if (e.code === 'Escape' && started) closeCustomize(); return; }
+  if (pauseMenu?.open) { if (pauseMenu.handleKey(e.code)) e.preventDefault(); return; }
+  if (e.code === 'Escape' && started) { openPause(); return; }
   // text fields keep their keys, whatever state the game is in
   if (e.target instanceof HTMLInputElement) return;
-  if (e.code === 'Tab' && started) { e.preventDefault(); scoreboard.show(true, spectating); return; }
-  if (e.code === 'KeyM' && started) { openCustomize(); return; }
-  // vs_ready: bound to R in the game's config
-  if (e.code === 'KeyR' && started) { if (!e.repeat) sendReady(); return; }
   if (spectating && started) {
     // a button clicked earlier keeps focus, and Space would press it too
     if (e.code === 'Space') { e.preventDefault(); document.activeElement?.blur?.(); if (!e.repeat) spectator.toggle(); return; }
     if (e.code === 'ArrowLeft') { spectator.cycle(-1); return; }
     if (e.code === 'ArrowRight') { spectator.cycle(1); return; }
   }
-  if (KEYMAP[e.code] !== undefined) { keys.add(e.code); e.preventDefault(); }
+  if (runCommand(e.code, e.repeat)) { e.preventDefault(); return; }
+  if (COMMAND_BITS[boundTo(e.code)] !== undefined) { keys.add(e.code); e.preventDefault(); }
 });
-addEventListener('keyup', (e) => { keys.delete(e.code); if (e.code === 'Tab') scoreboard.show(false); });
-addEventListener('blur', () => { keys.clear(); mouse = 0; scoreboard.show(false); });
-const sens = 0.22;
-document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) { if (!frozen) camYaw = angleNorm(camYaw - e.movementX * sens); camPitch = Math.max(-60, Math.min(70, camPitch + e.movementY * sens)); } });
-canvas.addEventListener('mousedown', (e) => { if (customize.open || spectating) return; if (document.pointerLockElement !== canvas) { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* retried on next click */ } if (!window.duelDebug.allowUnlocked) return; } mouse |= e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0; });
-addEventListener('mouseup', (e) => { mouse &= ~(e.button === 0 ? IN.ATTACK : e.button === 2 ? IN.BLOCK : 0); });
+addEventListener('keyup', (e) => { keys.delete(e.code); if (boundTo(e.code) === '+score') scoreboard.show(false); });
+addEventListener('blur', () => { keys.clear(); scoreboard.show(false); });
+/**
+ * [R client 1801d0f05] Counts to degrees: m_customaccel 3 raises the speed to m_customaccel_exponent, 0 doesn't, and the yaw and pitch
+ * factors take it from there.
+ * @param {number} x Mouse counts across.
+ * @param {number} y Mouse counts down.
+ * @returns {number[]} Degrees of yaw and pitch to add.
+ */
+function mouseDegrees(x, y) {
+  let s = cvar('sensitivity');
+  if (cvar('m_customaccel') === 3) s *= Math.pow(x * x + y * y, Math.max(0, (cvar('m_customaccel_exponent') - 1) * 0.5));
+  return [x * s * cvar('m_yaw'), y * s * cvar('m_pitch')];
+}
+/** Takes the mouse. m_rawinput asks the browser for unaccelerated counts where it can, and it's fine if it can't. */
+function lockMouse() {
+  const plain = () => { try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* retried on next click */ } };
+  try {
+    const asked = cvar('m_rawinput') ? canvas.requestPointerLock({ unadjustedMovement: true }) : canvas.requestPointerLock();
+    if (asked?.catch) asked.catch(() => { if (cvar('m_rawinput')) plain(); });
+  } catch { plain(); }
+}
+document.addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) { const [dy, dp] = mouseDegrees(e.movementX, e.movementY); if (!frozen) camYaw = angleNorm(camYaw - dy); camPitch = thirdPerson.clampPitch(camPitch + dp); } });
+// The browser's button numbers against the game's MOUSE1 to MOUSE5
+const MOUSE_CODE = ['Mouse1', 'Mouse3', 'Mouse2', 'Mouse4', 'Mouse5'];
+canvas.addEventListener('mousedown', (e) => {
+  if (customize.open || spectating || pauseMenu?.open) return;
+  if (document.pointerLockElement !== canvas) { lockMouse(); if (!window.duelDebug.allowUnlocked) return; }
+  const code = MOUSE_CODE[e.button];
+  if (!runCommand(code, false) && COMMAND_BITS[boundTo(code)] !== undefined) keys.add(code);
+});
+addEventListener('mousedown', (e) => { if (pauseMenu?.open && pauseMenu.handleKey(MOUSE_CODE[e.button])) e.preventDefault(); }, true);
+addEventListener('mouseup', (e) => { const code = MOUSE_CODE[e.button]; keys.delete(code); if (boundTo(code) === '+score') scoreboard.show(false); });
+addEventListener('wheel', (e) => {
+  const code = e.deltaY < 0 ? 'WheelUp' : 'WheelDown';
+  if (pauseMenu?.open) { if (e.deltaY && pauseMenu.handleKey(code)) e.preventDefault(); return; }
+  if (customize.open || !e.deltaY || document.pointerLockElement !== canvas) return;
+  if (!runCommand(code, false) && COMMAND_BITS[boundTo(code)] !== undefined) pulse(COMMAND_BITS[boundTo(code)]);
+}, { passive: false });
+// The browser's own Escape lets go of the mouse without a key event, and that's the pause key
+document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== canvas && started && !customize.open && !spectating && !pauseMenu?.open) openPause(); });
+function openPause() { keys.clear(); pulses.length = 0; pauseMenu?.show(true); scoreboard.show(false); document.exitPointerLock?.(); }
+function closePause() { pauseMenu?.show(false); if (!spectating && document.pointerLockElement !== canvas) lockMouse(); }
 addEventListener('contextmenu', (e) => e.preventDefault());
 let seq = 0;
 setInterval(() => {
   if (ws?.readyState !== 1 || myId == null) return;
-  let b = mouse;
-  for (const k of keys) b |= KEYMAP[k];
-  if (customize.open || spectating) b = 0;
+  let b = 0;
+  for (const k of keys) b |= COMMAND_BITS[boundTo(k)] ?? 0;
+  const nowMs = performance.now();
+  while (pulses.length && pulses[0].until < nowMs) pulses.shift();
+  for (const p of pulses) b |= p.bit;
+  if (customize.open || spectating || pauseMenu?.open) b = 0;
   if (window.duelDebug.forceButtons !== undefined) b = window.duelDebug.forceButtons;
   if (window.duelDebug.forceYaw !== undefined) camYaw = window.duelDebug.forceYaw;
-  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y: +camYaw.toFixed(2), p: +camPitch.toFixed(2), e: snaps.at(-1)?.time }));
+  const [aimPitch, aimYaw] = thirdPerson.aim(camView ?? [camPitch, camYaw, 0]);
+  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y: +angleNorm(aimYaw).toFixed(2), p: +aimPitch.toFixed(2), e: snaps.at(-1)?.time }));
 }, 15);
+
+pauseMenu = await createPauseMenu({
+  read: gameText, onResume: closePause, onPlay: () => sendReady(),
+  onCustomize: () => { pauseMenu.show(false); openCustomize(); },
+  onDisconnect: () => { ws?.close(); location.reload(); },
+});
+R.renderSize = pauseMenu.resolution();
+pauseMenu.onResolution = (r) => { R.renderSize = r; };
 
 // ------------------------------------------------------------ hud/events
 const duelHud = await createHud($('hud'), info);
@@ -582,7 +675,7 @@ const attackPreview = new TracerPreview();
  * @returns {object|null} The attack preview to draw.
  */
 function previewFrameData(me, cur, dt) {
-  const ci = me && charCache.get(me.c)?._resolved, want = me?.al ? snaps.at(-1)?.pv ?? null : null;
+  const ci = me && charCache.get(me.c)?._resolved, want = me?.al && cvar('bb_tracerPreview_enabled') ? snaps.at(-1)?.pv ?? null : null;
   attackPreview.update(dt, ci ? want : null, me?.a?.ph === 'swing', (w) => buildPath(ci.char, ci.gripBone, w.a, w.l, info.tracers[me.c]?.[String(w.a).toUpperCase()]));
   if (!me) return null;
   const aim = Math.max(-60, Math.min(40, me.p ?? 0));
@@ -619,6 +712,10 @@ async function tick() {
       if (!ci) { charCache.get(p.c)?.then((v) => { charCache.get(p.c)._resolved = v; }); continue; }
       const world = entityMatrix(p.o, [0, p.y, 0]);
       const fc = frameCharacter(p, ci, world);
+      if (p.id === myId) {
+        const at = ci.char.root.attachments.find((x) => x.name === 'chest'), m = at && matMul(fc.world[at.bone], at.local);
+        myChest = m ? [m[3] - p.o[0], m[7] - p.o[1], m[11] - p.o[2]] : null;
+      }
       R.lightCharacter(fc, p.o);
       const color = lookColor(p) ?? charColor(p.c);
       const st = fx.updatePlayer(p, ci.char, fc.world, ci.gripBone, color);
@@ -639,16 +736,19 @@ async function tick() {
   spectating = !me;
   if (me) spectator.view.arena = me.ar ?? 0;
   if (spectating && document.pointerLockElement === canvas) document.exitPointerLock?.();
-  if (spectating) { keys.clear(); mouse = 0; }
+  if (spectating) keys.clear();
+  let camUp = [0, 0, 1];
   if (me) {
-    const { forward: f } = angleVectors([camPitch, camYaw, 0]);
-    const head = [me.o[0], me.o[1], me.o[2] + 62];
-    const { right: r } = angleVectors([0, camYaw, 0]);
-    const orbit = [head[0] + r[0] * 18, head[1] + r[1] * 18, head[2]];
-    const wanted = [orbit[0] - f[0] * 110, orbit[1] - f[1] * 110, orbit[2] - f[2] * 110];
-    const tr = bsp.traceBox(orbit, wanted, camHull.mn, camHull.mx, 1);
-    eye = tr.endpos;
-    tgt = [orbit[0] + f[0] * 100, orbit[1] + f[1] * 100, orbit[2] + f[2] * 100];
+    const frameDt = Math.min(0.1, Math.max(1e-3, (now - lastFrame) / 1000));
+    const view = thirdPerson.update({ dt: frameDt, o: me.o, vel: me.v ?? [0, 0, 0], yaw: me.y, onGround: me.g, action: me.a?.n ?? null, dir: me.a?.d ?? 0, hitstop: !!me.hs, alive: me.al, chest: myChest }, [camPitch, camYaw]);
+    camView = view.angles;
+    window.duelDebug.camView = view;
+    eye = view.eye;
+    const { forward: f, up } = angleVectors(view.angles);
+    camUp = up;
+    tgt = [eye[0] + f[0] * 100, eye[1] + f[1] * 100, eye[2] + f[2] * 100];
+    // [R engine] Source's fov is the width of a 4:3 view
+    fovNow = 2 * Math.atan(Math.tan(view.fov * DEG / 2) * 0.75);
   } else if (started && cur) {
     [eye, tgt, fovNow] = spectatorCamera(cur, now);
   } else {
@@ -657,7 +757,7 @@ async function tick() {
   }
   if (window.duelDebug.cam) { eye = window.duelDebug.cam.eye; tgt = window.duelDebug.cam.tgt; }
   const aspect = canvas.width / canvas.height;
-  const vp = mul4(perspective(fovNow, aspect, 4, 16000), lookAt(eye, tgt, [0, 0, 1]));
+  const vp = mul4(perspective(fovNow, aspect, 4, 16000), lookAt(eye, tgt, camUp));
   const dt = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000));
   lastFrame = now;
   fx.localPos = me?.o;
@@ -703,7 +803,7 @@ function hud(cur, me) {
 requestAnimationFrame(tick);
 
 function openCustomize() {
-  keys.clear(); mouse = 0;
+  keys.clear();
   document.exitPointerLock?.();
   $('hud').style.display = 'none';
   customize.show(true);

@@ -232,16 +232,18 @@ export async function createHud(root, info = {}) {
   // change mid-string makes it cut across rows.
   let trail = [], lastCi = 0, lastSt = 0;
   function setTrail(me) {
-    const t = G.stance, ci = me.ci ?? 0, count = (st) => info.strings?.[me.c]?.[st] || 1;
-    if (ci <= 0 || ci < lastCi) trail = [];
+    const t = G.stance, ci = me.ci ?? 0, count = (st) => info.strings?.[me.c]?.[st] || 1, node = (st, i) => (i < count(st) ? i : 0);
+    if (ci <= 0) trail = [];
+    // a swing from past the end was the first node again, and goes on to the second
+    else if (ci < lastCi) trail = [[lastSt, node(lastSt, lastCi)]];
     else if (ci > lastCi) {
-      const hit = [lastSt, lastCi % count(lastSt)], prev = trail.at(-1);
+      const hit = [lastSt, node(lastSt, lastCi)], prev = trail.at(-1);
       if (!prev || prev[0] !== hit[0] || prev[1] !== hit[1]) trail.push(hit);
       // finishing a stance's whole string starts over; a one-node stance like air just stays put
-      if (count(me.st) > 1 && me.st === lastSt && ci % count(me.st) === 0) trail = [];
+      if (count(me.st) > 1 && me.st === lastSt && node(me.st, ci) === 0) trail = [];
     }
     lastCi = ci; lastSt = me.st;
-    const cur = [me.st, ci % count(me.st)], path = [...trail, cur];
+    const cur = [me.st, node(me.st, ci)], path = [...trail, cur];
     const key = `${me.c}|${path.join(';')}`;
     if (key === trailKey) return;
     trailKey = key;
@@ -334,7 +336,7 @@ export async function createHud(root, info = {}) {
         r.keyBox?.classList.toggle('on', active);
         setNodes(r, i, info.strings?.[me.c]?.[r.st] ?? 0);
         (r.nodes ?? []).forEach((n, k) => {
-          n.classList.toggle('on', me.st === r.st && k === (me.ci ?? 0) % r.nodes.length);
+          n.classList.toggle('on', me.st === r.st && k === ((me.ci ?? 0) < r.nodes.length ? me.ci ?? 0 : 0));
           n.classList.toggle('hit', trail.some(([st, at]) => st === r.st && at === k));
         });
       });
