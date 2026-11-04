@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { BSP } from '../shared/bsp.js';
 import { GameData } from '../shared/gamedata.js';
 import { CharacterStore } from '../shared/assets.js';
-import { World, Player, Cvars, TICK } from '../shared/sim.js';
+import { World, Player, Cvars, TICK, IN } from '../shared/sim.js';
 const G = process.argv[2] + '/berimbau/';
 const cvars = new Cvars(JSON.parse(readFileSync(new URL('../shared/cvars_all.json', import.meta.url))));
 const data = await GameData.load(async (p) => readFileSync(G + p, 'latin1'), cvars);
@@ -51,6 +51,22 @@ const toState = (w, d, state, max = 40) => { for (let i = 0; i < max / TICK && d
   toState(w, d, 'warmup');
   check('next match is winner against next in line', d.fighters.join() === '1,3', d.fighters);
   check('the loser has left the world', !w.players.includes(b) && w.players.includes(c));
+}
+
+{ // one alone can walk around in every arena, and a second person brings them back for the duel
+  for (let i = 0; i < 3; i++) {
+    const w = fresh(), d = w.duels[i], [a, b] = [mk(1, 'A'), mk(2, 'B')];
+    w.addPlayer(a, i);
+    const spawn = [...a.origin];
+    run(w, 0.5);
+    const from = [...a.origin];
+    a.buttons = IN.FORWARD; a.viewYaw = a.yaw;
+    run(w, 1);
+    const moved = Math.hypot(a.origin[0] - from[0], a.origin[1] - from[1]);
+    check(`alone in ${d.name}, walks`, d.state === 'waiting' && moved > 100, moved);
+    w.addPlayer(b, i);
+    check(`and a second person starts the duel from the spawn in ${d.name}`, d.state === 'warmup' && a.frozen && Math.hypot(a.origin[0] - spawn[0], a.origin[1] - spawn[1]) < 1, [d.state, a.origin]);
+  }
 }
 
 { // the challenger winning takes the front

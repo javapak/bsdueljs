@@ -29,6 +29,10 @@ const CSS = `
 #sb .sb-row.you{color:#ffd24a}
 `;
 
+/**
+ * @param {object} d An arena from the snapshot.
+ * @returns {string} The status line under its name.
+ */
 const statusOf = (d) => {
   if (d.f.length >= 2) {
     const base = `playing round ${d.r} in best ${Math.floor(d.max / 2) + 1} out of ${d.max}`;
@@ -40,6 +44,15 @@ const statusOf = (d) => {
   return d.q.length ? 'waiting for players' : 'this arena is empty';
 };
 
+/**
+ * The board held on Tab: every arena with its live view, players, queue and watchers.
+ * @param {HTMLElement} root Where it goes.
+ * @param {object} o Options.
+ * @param {string} o.title Title.
+ * @param {function(number): void} o.onJoin Join pressed, with the arena.
+ * @param {function(number): void} o.onView View pressed, with the arena.
+ * @returns {object} The board's controls.
+ */
 export function createScoreboard(root, { title, onJoin, onView }) {
   const style = document.createElement('style');
   style.textContent = CSS;

@@ -1,1 +1,1 @@
-{ "name": "bs-duel", "private": true, "type": "module", "scripts": { "start": "node server/main.mjs --bot", "test": "node tests/combat_diff.mjs 5000" } }
+{ "name": "bs-duel", "private": true, "license": "MIT", "type": "module", "scripts": { "start": "node server/main.mjs --bot", "test": "node tests/combat_diff.mjs 5000" } }

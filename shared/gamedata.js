@@ -1,6 +1,11 @@
 // Loads the game's own script files (never copied: read from the player's install).
 import { parseKV, kvFind, kvGet, kvAll } from './kv.js';
 
+/**
+ * KeyValues nodes as a plain object with lower case keys. A repeated key also appears as an array under key + '[]'.
+ * @param {Array} nodes KeyValues nodes.
+ * @returns {object} The object.
+ */
 function toObj(nodes) {
   // KV -> plain object with lowercase keys; repeated keys become arrays under key+'[]' as well.
   const o = {};
@@ -11,6 +16,12 @@ function toObj(nodes) {
   }
   return o;
 }
+/**
+ * How a script's "extends" works: nested blocks merge, anything else is replaced.
+ * @param {object} base Parent values.
+ * @param {object} over This script's values.
+ * @returns {object} A new merged object.
+ */
 function deepMerge(base, over) {
   const r = { ...base };
   for (const [k, v] of Object.entries(over)) {
@@ -22,10 +33,23 @@ const lookupCI = (o, name) => { const l = String(name).toLowerCase(); return o[l
 
 export const STANCE_KEYS = ['balanced', 'reverse', 'heavy', 'air']; // index = StanceType in the original
 export const ACTION_IDS = ['Block', 'Parry', 'Guard', 'Feint', 'Kick', 'Bow', 'Flourish', 'Taunt', 'Sit', 'Kill', 'Roll', 'Shuffle', 'AirDash', 'Grab', 'GrabDeflect', 'Thrown', 'Interrupt', 'InterruptUpper', 'AirInterrupt', 'Fall', 'Parried', 'ParriedAir', 'HitReactionWeak', 'HitReactionStrong', 'WallRun', 'WallFlip', 'WallSlide', 'WallClimb', 'Vault', 'WallTransTo', 'KneelingFalling', 'KneelingRecover', 'KneelRoll', 'RecoveryAttack', 'KneelParry', 'ThrowWeapon', 'GrapplingHook', 'AutoBlockThrowable', 'SprayPaintImage'];
+/**
+ * @param {string} name Action name from the scripts.
+ * @returns {number} The game's action id; 39 is any other, which is what attacks use.
+ */
 export const actionId = (name) => { const i = ACTION_IDS.indexOf(name); return i >= 0 ? i : 39; };
 
+/**
+ * Every script the duel reads, loaded from your install: actions, stances, characters, sword types, throwables, tracers and the item catalog.
+ */
 export class GameData {
-  // read: async (relative path under the game dir) => string
+  /**
+   * read: async (relative path under the game dir) => string
+   * Loads everything and resolves each script's "extends".
+   * @param {function(string): Promise<string>} read Reads a file by path under the game dir.
+   * @param {Cvars} cvars The cvar table.
+   * @returns {Promise<GameData>} The loaded data.
+   */
   static async load(read, cvars) {
     const d = new GameData();
     d.cvars = cvars;
@@ -162,14 +186,31 @@ export class GameData {
     return d;
   }
 
+  /**
+   * @param {string} name Action name, any case.
+   * @returns {object|undefined} The merged action script.
+   */
   action(name) { return lookupCI(this.actions, name); }
+  /**
+   * @param {string} charKey Character key.
+   * @param {number} stanceType 0 balanced, 1 fast, 2 heavy, 3 air.
+   * @returns {object|null} The character's stance script.
+   */
   stanceFor(charKey, stanceType) {
     const c = this.characters[charKey];
     const name = c.stances?.[STANCE_KEYS[stanceType]];
     return name ? this.stances[name.toLowerCase()] : null;
   }
-  // Mirrors the stance's GetAction(direction, comboIndex): side attacks use left/right,
-  // forward/back use the "forward" string.
+  /**
+   * Mirrors the stance's GetAction(direction, comboIndex): side attacks use left/right,
+   * forward/back use the "forward" string.
+   * So forward and back attacks walk the string; a side attack is the same one wherever you are in it.
+   * @param {string} charKey Character key.
+   * @param {number} stanceType 0 balanced, 1 fast, 2 heavy, 3 air.
+   * @param {number} dir 0 forward, 1 right, 2 back, 3 left.
+   * @param {number} comboIdx Position in the string; wraps at its length.
+   * @returns {object|null} The attack's action script.
+   */
   attackFor(charKey, stanceType, dir, comboIdx) {
     const s = this.stanceFor(charKey, stanceType);
     if (!s) return null;
@@ -184,5 +225,10 @@ export class GameData {
     }
     return name ? this.action(name) : null;
   }
+  /**
+   * @param {string} charKey Character key, for its default sword.
+   * @param {string} [type] Sword type name, lower case.
+   * @returns {object} That type's script, else the character's default, else the default type.
+   */
   swordFor(charKey, type) { return this.swordTypes[type] || this.swordTypes[this.charSword[charKey]] || this.swordTypes.default; }
 }

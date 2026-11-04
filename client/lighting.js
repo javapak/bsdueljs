@@ -6,7 +6,13 @@ const MAX_LIGHTS = 4; // r_worldlights
 const AMBIENT_MIN = 0.3, AMBIENT_FRACTION = 0.2, AMBIENT_FACTOR = 5; // r_ambientmin, r_ambientfraction, r_ambientfactor
 const AXES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
+/**
+ * Lighting for models, from the map's light entities and ambient samples.
+ */
 export class WorldLighting {
+  /**
+   * @param {BSP} bsp The map.
+   */
   constructor(bsp) {
     this.bsp = bsp;
     const { dv } = bsp;
@@ -37,7 +43,11 @@ export class WorldLighting {
     }
   }
 
-  // The leaf's ambient samples, blended. Six faces, +x -x +y -y +z -z.
+  /**
+   * The leaf's ambient samples, blended. Six faces, +x -x +y -y +z -z.
+   * @param {number[]} p A point.
+   * @returns {number[]} 18 values.
+   */
   ambientCube(p) {
     const { dv } = this.bsp;
     const leaf = this.bsp.pointLeaf(p), cube = new Float32Array(18);
@@ -85,7 +95,10 @@ export class WorldLighting {
     return bsp.traceBox(p, light.pos, [0, 0, 0], [0, 0, 0], 1).fraction < 1 ? 0 : ratio;
   }
 
-  // { cube: 6 rgb, lights: [{color, dir, pos, spot, atten}] }, strongest lights kept and the rest folded into the cube
+  /**
+   * { cube: 6 rgb, lights: [{color, dir, pos, spot, atten}] }, strongest lights kept and the rest folded into the cube
+   * @param {number[]} p A point.
+   */
   sample(p) {
     const cube = this.ambientCube(p);
     const hits = [];
@@ -138,6 +151,10 @@ export class WorldLighting {
     for (let i = 0; i < 18; i++) cube[i] *= k;
   }
 
+  /**
+   * @param {number[]} p A point.
+   * @returns {number} Index into the map's cubemaps, or -1.
+   */
   nearestCubemap(p) {
     let best = -1, bestD = Infinity;
     this.cubemaps.forEach((c, i) => { const d = (c[0] - p[0]) ** 2 + (c[1] - p[1]) ** 2 + (c[2] - p[2]) ** 2; if (d < bestD) { bestD = d; best = i; } });

@@ -55,6 +55,10 @@ const text = async (path) => {
   return new TextDecoder(u8[0] === 0xff && u8[1] === 0xfe ? 'utf-16le' : 'utf-8').decode(u8);
 };
 
+/**
+ * @param {string} path Material path under materials/.
+ * @returns {Promise<string|null>} A URL an element can use.
+ */
 export async function vtfUrl(path) {
   const r = await fetch('/game/materials/' + path + '.vtf');
   if (!r.ok) return null;
@@ -81,8 +85,15 @@ function fontOf(fonts, name, screenH) {
   return { family: 'Harabara', tall: 12 };
 }
 
-// [R client.dll 18029b550] The bar glides to the real health; on a loss the old value stays behind as the buffer,
-// which holds for healthbar.healthbuffer.delay and then drains. All values are 0..1 of the bar.
+/**
+ * [R client.dll 18029b550] The bar glides to the real health; on a loss the old value stays behind as the buffer,
+ * which holds for healthbar.healthbuffer.delay and then drains. All values are 0..1 of the bar.
+ * @param {object} d The bar: shown, buffer, last, holdUntil.
+ * @param {number} target Real health, 0 to 1.
+ * @param {number} now Time in seconds.
+ * @param {number} dt Seconds.
+ * @param {number} delay How long the buffer holds.
+ */
 export function stepHealthBar(d, target, now, dt, delay) {
   if (d.last !== target) {
     if (d.last > target && target > d.buffer) d.buffer = d.last;
@@ -95,6 +106,12 @@ export function stepHealthBar(d, target, now, dt, delay) {
   if (now > d.holdUntil && d.buffer !== target) d.buffer = toward(d.buffer, Math.min(Math.abs(target - d.buffer), 1) * dt * 3.75 + dt * 0.25);
 }
 
+/**
+ * Builds the duel HUD: health bars, portraits, the timer, round results, stance plates and the string display.
+ * @param {HTMLElement} root Where it goes.
+ * @param {object} [info] Server info, with strings per character.
+ * @returns {Promise<{update: function}>} Call update(cur, me, myId, dt) each frame.
+ */
 export async function createHud(root, info = {}) {
   const [schemeSrc] = await Promise.all([text('resource/ClientScheme.res')]);
   const scheme = kvFind(parseKV(schemeSrc), 'Scheme').value;
@@ -302,10 +319,12 @@ export async function createHud(root, info = {}) {
         const pulse = 0.5 + 0.5 * Math.sin(now * pulseSpeed);
         d.buf.style.width = `${d.buffer * 100}%`;
         d.buf.style.backgroundColor = css(mix([165, 145, 145], C.pulse, pulse * 0.25));
-        setTags(d, i, snap.max ?? 3, snap.res ?? [], p.id);
+        setTags(d, i, snap.s === 'waiting' ? 0 : snap.max ?? 3, snap.res ?? [], p.id);
       });
-      time.textContent = snap.s === 'waiting' ? '--' : String(Math.ceil(snap.tm));
-      round.textContent = snap.s === 'waiting' ? '' : `ROUND ${snap.r}`; // #bb_round_label
+      // [I] nothing to count down until a duel is starting
+      timer.style.visibility = snap.s === 'waiting' ? 'hidden' : '';
+      time.textContent = String(Math.ceil(snap.tm));
+      round.textContent = `ROUND ${snap.r}`; // #bb_round_label
       if (!me) return;
       setIcon(me.c, me.st);
       setTrail(me);

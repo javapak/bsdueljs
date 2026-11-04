@@ -10,7 +10,11 @@ const unit = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] 
 const add = (a, b, k) => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k];
 const mix = (a, ka, b, kb) => [a[0] * ka + b[0] * kb, a[1] * ka + b[1] * kb, a[2] * ka + b[2] * kb];
 
-// mstudiojigglebone_t for each bone that has one
+/**
+ * mstudiojigglebone_t for each bone that has one
+ * @param {Model} model The model.
+ * @returns {Map<number, object>} Bone index to its jiggle parameters.
+ */
 export function jiggleInfo(model) {
   const { dv } = model, out = new Map(), table = dv.getInt32(160, true);
   model.bones.forEach((_, i) => {
@@ -26,10 +30,22 @@ export function jiggleInfo(model) {
   return out;
 }
 
+/**
+ * The simulated state of one model's jiggle bones.
+ */
 export class JiggleBones {
+  /**
+   * @param {Map<number, object>} info From jiggleInfo.
+   */
   constructor(info) { this.info = info; this.state = new Map(); }
 
-  // The bone's matrix this frame, given where its parent and rest pose would put it
+  /**
+   * The bone's matrix this frame, given where its parent and rest pose would put it
+   * @param {number} bone Bone index.
+   * @param {number} now Time in seconds.
+   * @param {number[]} goal Where its parent and rest pose would put it.
+   * @returns {number[]} The 3x4 matrix.
+   */
   update(bone, now, goal) {
     const j = this.info.get(bone);
     const left = [goal[0], goal[4], goal[8]], up = [goal[1], goal[5], goal[9]], fwd = [goal[2], goal[6], goal[10]], base = [goal[3], goal[7], goal[11]];
@@ -85,6 +101,13 @@ export class JiggleBones {
     s.acc = add(s.acc, s.vel, -friction);
   }
 
+  /**
+   * Keeps the tip inside a cone around forward, removing its velocity through the cone's surface.
+   * @param {object} s The bone's state.
+   * @param {number[]} base The bone's position.
+   * @param {number[]} fwd The bone's goal direction.
+   * @param {number} limit The cone's half angle in radians.
+   */
   _cone(s, base, fwd, limit) {
     const along = [s.tip[0] - base[0], s.tip[1] - base[1], s.tip[2] - base[2]], len = Math.hypot(along[0], along[1], along[2]) || 1;
     const dir = [along[0] / len, along[1] / len, along[2] / len];

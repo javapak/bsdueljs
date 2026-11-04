@@ -13,7 +13,12 @@ const PIVOT = 36;
 const lerp3 = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
-// [R 1803f4e20] each pass adds the midpoints, then averages every inner point with its two neighbours
+/**
+ * [R 1803f4e20] each pass adds the midpoints, then averages every inner point with its two neighbours
+ * @param {number[][]} points The line.
+ * @param {number} passes How many times.
+ * @returns {number[][]} The smoothed line.
+ */
 export function smoothLine(points, passes) {
   let out = points;
   for (let n = 0; n < passes && out.length >= 2; n++) {
@@ -28,7 +33,15 @@ export function smoothLine(points, passes) {
   return out;
 }
 
-// The swing's sequence posed at each of its tracer entries, with no movement or aim
+/**
+ * The swing's sequence posed at each of its tracer entries, with no movement or aim
+ * @param {Character} char The character.
+ * @param {number} gripBone sword_grip's index.
+ * @param {string} anim The swing's activity.
+ * @param {string} [lower] Its lower body activity.
+ * @param {number[]} cycles The tracer's cycles.
+ * @returns {{strip: Array, mids: Array}|null} Vertices for the ribbon, and its middle line for the target check.
+ */
 export function buildPath(char, gripBone, anim, lower, cycles) {
   const seq = char.seqForActivity(anim);
   if (!seq || !cycles?.length || gripBone === undefined) return null;
@@ -65,7 +78,14 @@ export function buildPath(char, gripBone, anim, lower, cycles) {
 const toward = (v, target, step) => (target - v > step ? v + step : target - v < -step ? v - step : target);
 const apply = (m, p) => [m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3], m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7], m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11]];
 
-// How far along a to b the box first touches, or -1
+/**
+ * How far along a to b the box first touches, or -1
+ * @param {number[]} a Start.
+ * @param {number[]} b End.
+ * @param {number[]} mn Box minimum.
+ * @param {number[]} mx Box maximum.
+ * @returns {number} Fraction, or -1.
+ */
 function sweep(a, b, mn, mx) {
   let t0 = 0, t1 = 1;
   for (let k = 0; k < 3; k++) {
@@ -79,6 +99,9 @@ function sweep(a, b, mn, mx) {
   return t0;
 }
 
+/**
+ * What's drawn for the local fighter, with its fades.
+ */
 export class TracerPreview {
   constructor() {
     this.key = null; this.path = null;
@@ -86,7 +109,13 @@ export class TracerPreview {
     this.amount = 0; this.position = 0;
   }
 
-  // want: { a: animation, l: lower body } or null. build(want) makes the path. Fades the old path out, swaps, fades in.
+  /**
+   * want: { a: animation, l: lower body } or null. build(want) makes the path. Fades the old path out, swaps, fades in.
+   * @param {number} dt Seconds.
+   * @param {{a: string, l: string}|null} want The attack, from World.previewAttack.
+   * @param {boolean} swinging A swing is under way.
+   * @param {function(object): object} build Builds the path, as buildPath does.
+   */
   update(dt, want, swinging, build) {
     const key = want?.a ?? null;
     this.changed = key !== this.key;
@@ -97,7 +126,14 @@ export class TracerPreview {
     if (this.changed) { this.key = key; this.path = key ? build(want) : null; }
   }
 
-  // [R 1802b9280] Sweeps the path's middle against each enemy; the part of the path up to the first touch lights up.
+  /**
+   * [R 1802b9280] Sweeps the path's middle against each enemy; the part of the path up to the first touch lights up.
+   * @param {number} dt Seconds.
+   * @param {number[]} origin Fighter's position.
+   * @param {number} aim View pitch.
+   * @param {number} yaw Fighter's yaw.
+   * @param {number[][]} enemies Their positions.
+   */
   highlight(dt, origin, aim, yaw, enemies) {
     const mids = this.path?.mids;
     if (!mids || mids.length < 2) { this.amount = 0; return; }
@@ -118,7 +154,13 @@ export class TracerPreview {
     if (hit) this.position = best;
   }
 
-  // Vertices as x y z, then the shader's texcoord: u, top, along (1 at the swing's start), across
+  /**
+   * Vertices as x y z, then the shader's texcoord: u, top, along (1 at the swing's start), across
+   * @param {number[]} origin Fighter's position.
+   * @param {number} aim View pitch.
+   * @param {number} yaw Fighter's yaw.
+   * @returns {object|null} verts, count, ranges, amount, position.
+   */
   draw(origin, aim, yaw) {
     const strip = this.path?.strip;
     if (!strip || strip.length < 2 || (this.fade <= 0 && this.changed)) return null;

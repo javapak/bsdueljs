@@ -6,7 +6,7 @@ import { Model, buildMesh } from '/shared/mdl.js';
 import { JiggleBones, jiggleInfo } from '/shared/jiggle.js';
 import { SURF_TRANS, SURF_NODRAW, SURF_SKY, SURF_SKY2D, SURF_TRIGGER, SURF_SKIP, SURF_HINT } from '/shared/bsp.js';
 const SURF_BUMPLIGHT = 0x800;
-import { matMul, quatMatrix } from '/shared/mathx.js';
+import { matMul, quatMatrix, rigidInverse } from '/shared/mathx.js';
 import { WorldLighting } from './lighting.js';
 import { propMatrix } from '/shared/phy.js';
 import { Exposure, tonemapSettings } from '/shared/exposure.js';
@@ -570,6 +570,9 @@ function vmtColor(v, def) {
 }
 const gammaToLinear = (x) => Math.pow(Math.max(0, x), 2.2);
 
+/**
+ * The WebGPU renderer: the world, props, characters, particles, and shadows.
+ */
 export class Renderer {
   constructor(canvas, device, format, fetchGame) {
     Object.assign(this, { canvas, device, format, fetchGame });
@@ -1020,6 +1023,10 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
   }
 
   // ---------------------------------------------------------------- world
+  /**
+   * @param {BSP} bsp The map.
+   * @param {function} [onProgress] Told how loading is going.
+   */
   async loadWorld(bsp, onProgress = () => {}) {
     const d = this.device;
     this.bsp = bsp;
@@ -1383,7 +1390,11 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
 
   _envAt(p) { return this.envGroups?.[this.lighting.nearestCubemap(p)] ?? this.bgBlackEnv; }
 
-  // Refreshes what a character is lit by; a few frames between samples, since each traces to every light
+  /**
+   * Refreshes what a character is lit by; a few frames between samples, since each traces to every light
+   * @param {object} fc The fighter's frame data.
+   * @param {number[]} o Their position.
+   */
   lightCharacter(fc, o) {
     if (!this.lighting) return;
     const b = fc.bones;
@@ -1416,18 +1427,38 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
     b.env = this.menuEnv ?? this.bgBlackEnv;
   }
 
-  // A sword or scabbard: no animation of its own, it follows the fighter's bones of the same names
+  /**
+   * A sword or scabbard: it follows the fighter's bones of the same names, and its others hold its idle's first frame
+   * @param {string} path Model path.
+   * @param {number} skin Skin family.
+   * @param {string} [material] Material to use instead.
+   * @returns {Promise<object|null>} The mesh.
+   */
   loadAttachment(path, skin, material = null) { return this._meshFor(path, null, skin, { material }).catch(() => null); }
-  // The fighter's own model with a skin family and body groups chosen
+  /**
+   * The fighter's own model with a skin family and body groups chosen
+   * @param {string} path Model path.
+   * @param {number} skin Skin family.
+   * @param {Set<string>} body Body groups.
+   * @returns {Promise<object|null>} The mesh.
+   */
   loadBody(path, skin, body) { return this._meshFor(path, null, skin, { body }).catch(() => null); }
 
+  /**
+   * Poses a sword, scabbard, mask or cape on a fighter this frame. Bones sharing a fighter bone's name take its matrix; the others follow from those.
+   * @param {object} fc The fighter's frame data, from frameCharacter.
+   * @param {object} part The part. With `held`, its own bones use idlePose rather than the reference pose.
+   * @param {Character} char The fighter's character.
+   */
   attachTo(fc, part, char) {
     const { model } = part.mesh, out = new Array(model.bones.length), data = part.bones.data;
+    const pose = part.held ? model.idlePose() : model.refPose();
     let matched = false;
+    // where the model's own space lands: a root the fighter doesn't have stays rigid with the bones it does
     let rigid = null;
     model.bones.forEach((b, i) => {
       const hit = char.root.boneByName.get(b.name.toLowerCase());
-      if (hit !== undefined && !rigid) { rigid = matMul(fc.world[hit], b.poseToBone); matched = true; }
+      if (hit !== undefined && !rigid) { rigid = matMul(fc.world[hit], rigidInverse(pose.world[i])); matched = true; }
     });
     // A cape hangs from the fighter's attachment of the same name [client.dll 180383a49], which sits off the bone
     const own = model.attachments.find((a) => /^anim_/.test(a.name)), theirs = own && char.root.attachments.find((a) => a.name === own.name);
@@ -1438,13 +1469,12 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
       const hit = char.root.boneByName.get(b.name.toLowerCase());
       if (i === 0 && anchor) out[i] = anchor;
       else if (hit !== undefined) out[i] = fc.world[hit];
-      else if (b.parent >= 0) {
-        const goal = matMul(out[b.parent], quatMatrix(b.quat, b.pos));
+      else if (b.parent >= 0 && out[b.parent]) {
+        const goal = matMul(out[b.parent], pose.local[i]);
         out[i] = part.jiggle.info.has(i) ? part.jiggle.update(i, now, goal) : goal;
-      }
+      } else if (rigid) out[i] = matMul(rigid, pose.world[i]);
       if (i >= 128) return;
-      // a root the fighter doesn't have stays rigid with the bones it does, as in the model's own pose
-      if (out[i]) data.set(matMul(out[i], b.poseToBone), i * 12); else if (rigid) data.set(rigid, i * 12);
+      if (out[i]) data.set(matMul(out[i], b.poseToBone), i * 12);
     });
     part.shown = matched;
     // lit where its fighter stands, in the fighter's color
@@ -1453,7 +1483,13 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
     part.bones.env = fc.bones.env;
   }
 
-  // Skinned character instance
+  /**
+   * Skinned character instance
+   * @param {string} key Character key.
+   * @param {string} mdlPath Model path.
+   * @param {Character} char The character.
+   * @returns {Promise<{key: string, mesh: object, char: Character}>} The instance.
+   */
   async loadCharacter(key, mdlPath, char) {
     const mesh = await this._meshFor(mdlPath, null);
     if (!mesh) throw new Error('character mesh missing: ' + mdlPath);
@@ -1507,8 +1543,12 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
   }
 
   // ---------------------------------------------------------------- arena previews
-  // [R client 18028ac20, 180268420] the scoreboard shows each arena through its spectator camera. The game keeps one
-  // texture (_rt_duelPreview) split into four cells; a texture per arena gives the water its own depth and scene copy.
+  /**
+   * [R client 18028ac20, 180268420] the scoreboard shows each arena through its spectator camera. The game keeps one
+   * texture (_rt_duelPreview) split into four cells; a texture per arena gives the water its own depth and scene copy.
+   * @param {number} i Arena index.
+   * @returns {object} The texture and depth to draw that arena into.
+   */
   previewTarget(i) {
     const d = this.device, w = Math.max(1, this.canvas.width >> 1), h = Math.max(1, this.canvas.height >> 1);
     this.previews ??= [];
@@ -1526,7 +1566,9 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
     return t;
   }
 
-  // rects: [{ i, x, y, w, h }] in canvas pixels, drawn over the frame already on the canvas
+  /**
+   * rects: [{ i, x, y, w, h }] in canvas pixels, drawn over the frame already on the canvas
+   */
   drawPreviews(rects) {
     const shown = rects.filter((r) => this.previews?.[r.i]?.drawn);
     if (!shown.length) return;
@@ -1545,6 +1587,10 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
   }
 
   // ---------------------------------------------------------------- frame
+  /**
+   * Draws one frame.
+   * @param {object} view vp, eye, fwd, fovY, characters, tris, tracerPreview, fx, and target to draw somewhere other than the canvas.
+   */
   frame(view) {
     this.resize();
     const d = this.device;
@@ -1716,10 +1762,6 @@ fn pow4(x: f32) -> f32 { let y = x * x; return y * y; }
   return vec4f(s * c, 2.0 * a * feather);
 }`;
 const SRGB_LINEAR = Float32Array.from({ length: 256 }, (_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
-
-function rigidInverse(m) {
-  return [m[0], m[4], m[8], -(m[0] * m[3] + m[4] * m[7] + m[8] * m[11]), m[1], m[5], m[9], -(m[1] * m[3] + m[5] * m[7] + m[9] * m[11]), m[2], m[6], m[10], -(m[2] * m[3] + m[6] * m[7] + m[10] * m[11])];
-}
 
 function invert4(m) {
   const a = m, r = new Float32Array(16);

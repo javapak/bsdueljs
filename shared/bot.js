@@ -1,5 +1,11 @@
 // Simple practice opponent. It only presses the same buttons a player can.
 import { IN } from './sim.js';
+/**
+ * Makes the --bot opponent. Every 0.15s to 0.4s it picks a plan from range and what you're doing: close in past 75 units,
+ * often block when you swing, sometimes grab inside 45, otherwise mostly attack, with some strafing and backing off.
+ * It changes stance every 6s to 14s. It isn't meant to play well, only to give you something to practice on.
+ * @returns {function(Player, World): void} Called each tick; sets the fighter's buttons and viewYaw.
+ */
 export function makeBotBrain() {
   let thinkAt = 0, plan = 'approach', holdUntil = 0, stanceAt = 0;
   return (p, w) => {

@@ -3,6 +3,12 @@ const FMT = { RGBA8888: 0, ABGR8888: 1, RGB888: 2, BGR888: 3, RGB565: 4, I8: 5, 
 const bpp = { 0: 4, 1: 4, 2: 3, 3: 3, 4: 2, 5: 1, 6: 2, 8: 1, 11: 4, 12: 4, 16: 4, 17: 2, 19: 2, 22: 2, 24: 8 };
 const isDXT = (f) => f === 13 || f === 14 || f === 15 || f === 20;
 const mipBytes = (f, w, h) => (isDXT(f) ? Math.ceil(w / 4) * Math.ceil(h / 4) * (f === 13 || f === 20 ? 8 : 16) : w * h * (bpp[f] ?? 4));
+/**
+ * Reads a Valve texture's header and finds its mip levels.
+ * @param {Uint8Array} buf .vtf contents.
+ * @param {number} [maxSize] Largest mip size wanted.
+ * @returns {object} The texture, with its format, data and levels.
+ */
 export function parseVTF(buf, maxSize = 1024) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   if (dv.getUint32(0, true) !== 0x00465456) throw new Error('not a VTF');
@@ -59,6 +65,15 @@ function parseSheet(dv, off) {
   } catch { return null; }
 }
 const rgb565 = (c) => [((c >> 11) & 31) * 255 / 31, ((c >> 5) & 63) * 255 / 63, (c & 31) * 255 / 31];
+/**
+ * Software DXT decoding, to plain RGBA.
+ * @param {Uint8Array} src Texture bytes.
+ * @param {number} off Where the level starts.
+ * @param {number} w Width.
+ * @param {number} h Height.
+ * @param {number} kind 1, 3 or 5.
+ * @returns {Uint8Array} RGBA.
+ */
 function decodeDXT(src, off, w, h, kind) {
   const out = new Uint8Array(w * h * 4);
   const bw = Math.ceil(w / 4), bh = Math.ceil(h / 4), step = kind === 1 ? 8 : 16;
@@ -101,6 +116,11 @@ function decodeDXT(src, off, w, h, kind) {
   }
   return out;
 }
+/**
+ * @param {object} t From parseVTF.
+ * @param {object} l One of its levels.
+ * @returns {Uint8Array} The level as RGBA.
+ */
 export function decodeLevel(t, l) {
   const { fmt, buf } = t, { w, h, off } = l;
   if (fmt === 13 || fmt === 20) return decodeDXT(buf, off, w, h, 1);

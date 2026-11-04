@@ -14,7 +14,13 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const rndDir = () => { for (;;) { const x = rnd(-1, 1), y = rnd(-1, 1), z = rnd(-1, 1), l = x * x + y * y + z * z; if (l > 1e-4 && l <= 1) { const s = 1 / Math.sqrt(l); return [x * s, y * s, z * s]; } } };
 const get = (o, k, d) => (o[k] === undefined ? d : o[k]);
 
-// A control point: position plus an orthonormal frame (forward/left/up, Source's x/y/z).
+/**
+ * A control point: position plus an orthonormal frame (forward/left/up, Source's x/y/z).
+ * @param {number[]} pos Position.
+ * @param {number[]} [dir] Forward.
+ * @param {number[]} [up] Up.
+ * @returns {object} The control point.
+ */
 export function makeCP(pos, dir = [1, 0, 0], up = [0, 0, 1]) {
   const m = Math.hypot(dir[0], dir[1], dir[2]);
   const fwd = m > 1e-6 ? [dir[0] / m, dir[1] / m, dir[2] / m] : [1, 0, 0];
@@ -339,17 +345,33 @@ const CONSTRAINT = {
 const LIST = (d, k) => d[k] || [];
 export const RENDERERS = new Set(['render_animated_sprites', 'render_sprite_trail', 'render_rope']);
 
+/**
+ * The particle system definitions loaded from .pcf files.
+ */
 export class ParticleLibrary {
   constructor() { this.systems = new Map(); }
+  /**
+   * Later definitions of a name replace earlier ones.
+   * @param {string} text .pcf contents.
+   */
   add(text) { for (const [n, s] of parsePCF(text).systems) this.systems.set(n, s); }
-  // Names reached from a root (children included)
+  /**
+   * Names reached from a root (children included)
+   * @param {string} name System name.
+   * @param {Set<string>} [seen] Names so far.
+   * @returns {Set<string>} The names.
+   */
   closure(name, seen = new Set()) {
     if (seen.has(name) || !this.systems.has(name)) return seen;
     seen.add(name);
     for (const c of LIST(this.systems.get(name), 'children')) if (c.child?.name) this.closure(c.child.name, seen);
     return seen;
   }
-  // Function names in a closure the runtime doesn't implement
+  /**
+   * Function names in a closure the runtime doesn't implement
+   * @param {string} name System name.
+   * @returns {Set<string>} Each as 'kind:function', such as 'op:Some Operator'.
+   */
   unsupported(name) {
     const out = new Set();
     for (const n of this.closure(name)) {
@@ -365,6 +387,9 @@ export class ParticleLibrary {
   }
 }
 
+/**
+ * One running particle system.
+ */
 export class ParticleInstance {
   constructor(lib, def, host, cps, parent = null) {
     Object.assign(this, { lib, def, host, parent });
@@ -381,9 +406,20 @@ export class ParticleInstance {
     this.children = LIST(def, 'children').filter((c) => c.child?.name && lib.systems.has(c.child.name)).map((c) => ({ delay: c.delay ?? 0, name: c.child.name, inst: null }));
   }
 
+  /**
+   * @param {number} n Control point number.
+   * @returns {object} That control point, or the first if unset.
+   */
   cp(n) { return this.cps[n] ?? this.cps[0]; }
+  /**
+   * @param {number} n Control point number.
+   * @param {object} c From makeCP.
+   */
   setCP(n, c) { const old = this.cps[n]; if (old) c.prev = old.pos; if (old?.entity !== undefined && c.entity === undefined) c.entity = old.entity; this.cps[n] = c; }
-  // Follows the same semantics as ParticleSystem_StopEmission: no new particles, existing ones finish.
+  /**
+   * Follows the same semantics as ParticleSystem_StopEmission: no new particles, existing ones finish.
+   * Stops it and its children from emitting.
+   */
   stop() { this.stopped = true; for (const c of this.children) { c.inst?.stop(); c.stopped = true; } }
 
   _emit(n, dt) {
@@ -430,6 +466,9 @@ export class ParticleInstance {
     }
   }
 
+  /**
+   * @param {number} dt Seconds.
+   */
   step(dt) {
     if (dt <= 0) return;
     this._runEmitters(dt);

@@ -20,6 +20,10 @@ function convert(type, v) {
   }
 }
 
+/**
+ * @param {string} text .pcf contents.
+ * @returns {{roots: object[], systems: Map<string, object>}} Top level elements, and particle systems by name.
+ */
 export function parsePCF(text) {
   const t = tokens(text);
   let i = 0;

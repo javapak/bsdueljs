@@ -75,6 +75,13 @@ function iconUrl(path) {
   return icons.get(key);
 }
 
+/**
+ * The start menu and M menu: character, sword, outfit and color, saved in the browser.
+ * @param {HTMLElement} root Where it goes.
+ * @param {object} info Server info: characters, swords and items.
+ * @param {URLSearchParams} params URL options that preselect items, such as ?sword= or ?skin=.
+ * @returns {object} The screen's state and controls.
+ */
 export function createCustomize(root, info, params) {
   const style = document.createElement('style');
   style.textContent = CSS;

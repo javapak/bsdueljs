@@ -2,7 +2,7 @@
 import { BSP } from '/shared/bsp.js';
 import { Model, Character } from '/shared/mdl.js';
 import { IN, animLayers } from '/shared/sim.js';
-import { entityMatrix, matMul, angleVectors, DEG, angleDiff, angleNorm } from '/shared/mathx.js';
+import { entityMatrix, matMul, rigidInverse, angleVectors, DEG, angleDiff, angleNorm } from '/shared/mathx.js';
 import { Renderer } from './render.js';
 import { FX } from './fx.js';
 import { createHud } from './hud.js';
@@ -212,8 +212,15 @@ function lookAt(eye, tgt, up) {
 function mul4(a, b) { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[r + 4] * b[c * 4 + 1] + a[r + 8] * b[c * 4 + 2] + a[r + 12] * b[c * 4 + 3]; return o; }
 
 const instances = new Map();
-// Crossfades: when the base sequence changes, the old pose stays underneath and the new one fades in
-// over the sequence's own fade time (Source's sequence transitions).
+/**
+ * Crossfades: when the base sequence changes, the old pose stays underneath and the new one fades in
+ * over the sequence's own fade time (Source's sequence transitions).
+ * @param {object} ci The loaded character.
+ * @param {object} an The snapshot's animation state.
+ * @param {object} inst This fighter's client state.
+ * @param {number} now Time in seconds.
+ * @returns {{P: number[][], Q: number[][]}} The pose.
+ */
 function poseOf(ci, an, inst, now) {
   const { char } = ci;
   const layers = animLayers(char, an);
@@ -243,10 +250,14 @@ function poseOf(ci, an, inst, now) {
 const swordMeshes = new Map();
 window.duelDebug.swordMeshes = swordMeshes;
 window.duelDebug.instances = () => instances;
+/**
+ * @param {object} p A fighter from the snapshot.
+ * @returns {Array<object>|null} Sword and scabbard parts, once loaded.
+ */
 function swordParts(p) {
   const inst = instances.get(p.id);
   if (!inst) return null;
-  if (inst.swordItem !== p.it) { inst.swordItem = p.it; inst.swordParts = null; loadSwordParts(p.it).then((list) => { if (inst.swordItem === p.it) inst.swordParts = list.map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true })); }); }
+  if (inst.swordItem !== p.it) { inst.swordItem = p.it; inst.swordParts = null; loadSwordParts(p.it).then((list) => { if (inst.swordItem === p.it) inst.swordParts = list.map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true, held: true })); }); }
   return inst.swordParts;
 }
 function loadSwordParts(id) {
@@ -257,7 +268,12 @@ function loadSwordParts(id) {
   }
   return swordMeshes.get(id);
 }
-// What the fighter wears: the body with its skin and body groups, then a part for each item with a model
+/**
+ * What the fighter wears: the body with its skin and body groups, then a part for each item with a model
+ * @param {object} p A fighter from the snapshot.
+ * @param {object} ci The loaded character.
+ * @returns {object[]} The parts with a model, once loaded.
+ */
 function lookParts(p, ci) {
   const inst = instances.get(p.id);
   const ids = p.lk ?? [], key = ids.join();
@@ -319,6 +335,13 @@ function starsFrame(cur, time, attached) {
   for (const id of flyingStars) if (!live.has(id)) { audio.endStar(id); flyingStars.delete(id); }
   for (const id of starParts.keys()) if (typeof id === 'number' && !live.has(id)) starParts.delete(id);
 }
+/**
+ * One fighter's bones this frame, including starting and running their ragdoll on death.
+ * @param {object} p A fighter from the snapshot.
+ * @param {object} ci The loaded character.
+ * @param {number[]} world The entity's matrix.
+ * @returns {{bones: object, mesh: object, world: number[][]}} What to draw.
+ */
 function frameCharacter(p, ci, world) {
   let inst = instances.get(p.id);
   if (!inst) { inst = { bones: R.newBoneBuffer() }; instances.set(p.id, inst); }
@@ -338,9 +361,13 @@ function frameCharacter(p, ci, world) {
   data.set(lookTint(p), 128 * 12);
   return { bones: inst.bones, mesh: inst.body ?? ci.mesh, world: bones };
 }
-// Values the charge proxies hand bb_charge, from the character's material
-// [R client 1802b0e4b] during the dash's cooldown, after the dash itself, a rim beats on the fighter: $CHARGEEXTRARIMLIGHT*, its color 255 79 79
-// [I] the amplitude: 1.5 instead when a check on the game mode passes, which wasn't identified
+/**
+ * Values the charge proxies hand bb_charge, from the character's material
+ * [R client 1802b0e4b] during the dash's cooldown, after the dash itself, a rim beats on the fighter: $CHARGEEXTRARIMLIGHT*, its color 255 79 79
+ * [I] the amplitude: 1.5 instead when a check on the game mode passes, which wasn't identified
+ * @param {object} p A fighter from the snapshot.
+ * @returns {number} Rim strength.
+ */
 function dashRim(p) { return p.dc > 0 && p.a?.n !== 'AirDash' ? Math.abs(Math.sin(p.dc * 5)) * 0.75 : 0; }
 function setCharge(fc, amount, color, rim = 0) {
   const v = fc.mesh.chargeParams || {}, data = fc.bones.data, t = performance.now() / 1000;
@@ -357,15 +384,23 @@ function setCharge(fc, amount, color, rim = 0) {
   fc.charge = amount;
   fc.rim = rim;
 }
-// The first entry of the character's colorlist; the game networks the player's choice as m_vecCharacterColor [I: which entry]
-// An outfit color from the customization screen stands in for the character's own [I]
+/**
+ * The first entry of the character's colorlist; the game networks the player's choice as m_vecCharacterColor [I: which entry]
+ * An outfit color from the customization screen stands in for the character's own [I]
+ * @param {object} p A fighter from the snapshot.
+ * @returns {number[]} The color.
+ */
 function lookColor(p) {
   const item = p.lk?.map((id) => info.lookItems.find((i) => i.id === id)).find((i) => i?.colour);
   if (!item) return null;
   const rgb = item.picker ? p.cc : item.colour.trim().split(/\s+/).map(Number);
   return rgb ? rgb.map((x) => x / 255) : null;
 }
-// [R client.dll 1802b1510] what materials with the PlayerTint proxy get: the color, and no tint at all for pure white
+/**
+ * [R client.dll 1802b1510] what materials with the PlayerTint proxy get: the color, and no tint at all for pure white
+ * @param {object} p A fighter from the snapshot.
+ * @returns {number[]} The tint.
+ */
 function lookTint(p) {
   const c = lookColor(p);
   return c && !(c[0] === 1 && c[1] === 1 && c[2] === 1) ? [c[0], c[1], c[2], 1] : [1, 1, 1, 0];
@@ -375,6 +410,11 @@ function charColor(key) {
   return [v[0] ?? 1, v[1] ?? 1, v[2] ?? 1];
 }
 const lerp = (a, b, t) => a + (b - a) * t;
+/**
+ * Fighters between the two snapshots around a time, which hides that snapshots come 32 times a second.
+ * @param {number} time Server time to show.
+ * @returns {{snap: object, players: object[]}} The newer snapshot, with blended fighters.
+ */
 function interpolated(time) {
   // renderTime is ~2 snapshots behind the newest so there's always a pair to blend
   let a = snaps[0], b = snaps[snaps.length - 1];
@@ -463,8 +503,8 @@ function previewFrame(time) {
       const part = wheelPart(i, list[(at + (i - WHEEL.middle) + list.length * 12) % list.length]);
       if (!part) continue;
       // the slot places the sword's grip bone, as a fighter's hand does
-      const m = matMul(wheelSlot(i), part.mesh.model.bones[0].poseToBone);
-      for (let b = 0; b < part.mesh.model.bones.length && b < 128; b++) part.bones.data.set(m, b * 12);
+      const { model } = part.mesh, pose = model.idlePose(), root = matMul(wheelSlot(i), rigidInverse(pose.world[model.boneByName.get('sword_grip') ?? 0]));
+      for (let b = 0; b < model.bones.length && b < 128; b++) part.bones.data.set(matMul(matMul(root, pose.world[b]), model.bones[b].poseToBone), b * 12);
       part.bones.data.set(lookTint(p), 128 * 12);
       R.menuLights(part.bones);
       parts.push(part);
@@ -481,6 +521,11 @@ function previewFrame(time) {
 // [I] a map with two cameras on one arena uses the first, and the camera holds the entity's own angles.
 const arenaCams = bsp.entities.filter((e) => e.classname === 'berimbau_spectator_camera');
 const specLook = { dir: null };
+/**
+ * @param {object} cur The interpolated frame.
+ * @param {number} now Time in milliseconds.
+ * @returns {Array} [eye, target, vertical fov in radians].
+ */
 function spectatorCamera(cur, now) {
   const view = spectator.view, d = cur.snap.arenas?.[view.arena];
   const follow = view.mode === 'player' ? cur.players.find((p) => p.id === view.follow) : null;
@@ -501,8 +546,13 @@ function spectatorCamera(cur, now) {
   return [eye, eye.map((v, i) => v + specLook.dir[i] * 100), vFov];
 }
 
-// [R client 18028ac20] an arena's preview: its camera (server 180327d4d copies m_vecPreviewOrigin and m_angPreviewAngles
-// from the first one), fov 90 straight across the view since this path skips the 4:3 scaling, near 10, far 10000
+/**
+ * [R client 18028ac20] an arena's preview: its camera (server 180327d4d copies m_vecPreviewOrigin and m_angPreviewAngles
+ * from the first one), fov 90 straight across the view since this path skips the 4:3 scaling, near 10, far 10000
+ * @param {object} d An arena from the snapshot.
+ * @param {number} aspect The cell's width over height.
+ * @returns {object|null} The view, or null without a camera.
+ */
 function previewView(d, aspect) {
   const cam = arenaCams.find((c) => c.duel === d.tn) ?? arenaCams[0];
   if (!cam) return null;
@@ -513,6 +563,12 @@ function previewView(d, aspect) {
 
 // [R client 1802c3920] the attack preview is for the local fighter, while alive
 const attackPreview = new TracerPreview();
+/**
+ * @param {object} [me] The local fighter.
+ * @param {object} cur The interpolated frame.
+ * @param {number} dt Seconds.
+ * @returns {object|null} The attack preview to draw.
+ */
 function previewFrameData(me, cur, dt) {
   const ci = me && charCache.get(me.c)?._resolved, want = me?.al ? snaps.at(-1)?.pv ?? null : null;
   attackPreview.update(dt, ci ? want : null, me?.a?.ph === 'swing', (w) => buildPath(ci.char, ci.gripBone, w.a, w.l, info.tracers[me.c]?.[String(w.a).toUpperCase()]));
@@ -528,6 +584,9 @@ const norm3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]
 let lastFrame = performance.now();
 let frames = 0, fpsT = performance.now(), fps = 0;
 const camHull = { mn: [-4, -4, -4], mx: [4, 4, 4] };
+/**
+ * One rendered frame: choose the camera, pose every fighter in view, then draw and update the HUD.
+ */
 async function tick() {
   requestAnimationFrame(tick);
   frames++;
@@ -606,6 +665,10 @@ async function tick() {
   window.duelDebug.state = { snaps: snaps.length, myId, chars: characters.length, duel: cur?.snap?.duel, stats: R.stats, eye, me: me && { dc: me.dc, o: me.o, a: me.a, hp: me.hp, an: me.an } };
 }
 let lastHudAt = performance.now(), lastViewSent = 0;
+/**
+ * @param {object} cur The interpolated frame.
+ * @param {object} [me] The local fighter.
+ */
 function hud(cur, me) {
   const now = performance.now(), dt = (now - lastHudAt) / 1000;
   lastHudAt = now;

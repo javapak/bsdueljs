@@ -1,7 +1,11 @@
 // Static prop collision: the convex pieces in a model's .phy (Havok/IVP compact surfaces), turned into plane lists.
 const IVP_TO_SOURCE = 1 / 0.0254;
 
-// .phy -> convex pieces, each a list of model-space points and its triangles (indices into them)
+/**
+ * .phy -> convex pieces, each a list of model-space points and its triangles (indices into them)
+ * @param {Uint8Array} bytes .phy contents.
+ * @returns {Array<{points: number[][], triangles: number[][]}>} The pieces.
+ */
 export function parseConvexPieces(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let o = dv.getInt32(0, true);
@@ -41,14 +45,24 @@ export function parseConvexPieces(bytes) {
   return pieces;
 }
 
-// 3x4 rows from a prop's origin and angles
+/**
+ * 3x4 rows from a prop's origin and angles
+ * @param {number[]} o Origin.
+ * @param {number[]} a [pitch, yaw, roll].
+ * @returns {number[]} 3x4 matrix.
+ */
 export function propMatrix(o, a) {
   const D = Math.PI / 180;
   const sy = Math.sin(a[1] * D), cy = Math.cos(a[1] * D), sp = Math.sin(a[0] * D), cp = Math.cos(a[0] * D), sr = Math.sin(a[2] * D), cr = Math.cos(a[2] * D);
   return [cp * cy, sp * sr * cy - cr * sy, sp * cr * cy + sr * sy, o[0], cp * sy, sp * sr * sy + cr * cy, sp * cr * sy - sr * cy, o[1], -sp, sr * cp, cr * cp, o[2]];
 }
 
-// A piece placed in the world: its faces as outward planes, plus axial planes so a box can't slip past a sharp corner
+/**
+ * A piece placed in the world: its faces as outward planes, plus axial planes so a box can't slip past a sharp corner
+ * @param {{points: number[][], triangles: number[][]}} piece From parseConvexPieces.
+ * @param {number[]} m From propMatrix.
+ * @returns {{planes: Array, mn: number[], mx: number[]}} Its planes and bounds.
+ */
 export function placePiece(piece, m) {
   const pts = piece.points.map((p) => [
     m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3], m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7], m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11]]);

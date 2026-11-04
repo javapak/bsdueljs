@@ -15,6 +15,9 @@ const flat = (a, b) => norm([a[0] - b[0], a[1] - b[1], 0.0001]);
 const attPos = (m) => [m[3], m[7], m[11]];
 const attFwd = (m) => [m[0], m[4], m[8]];
 
+/**
+ * Particles and swing trails. Gameplay events go in; a frame's vertices come out.
+ */
 export class FX {
   constructor(renderer, fetchGame, bsp) {
     Object.assign(this, { R: renderer, fetchGame, bsp });
@@ -33,7 +36,9 @@ export class FX {
     };
   }
 
-  // Every file in the game's manifest, later files replacing earlier definitions of the same name
+  /**
+   * Every file in the game's manifest, later files replacing earlier definitions of the same name
+   */
   async load() {
     const list = await this.fetchGame('particles/particles_manifest.txt');
     const files = list ? [...new TextDecoder('latin1').decode(list).matchAll(/"file"\s+"!?([^"]+)"/g)].map((m) => m[1]) : PCF_FILES.map((f) => `particles/${f}.pcf`);
@@ -42,8 +47,10 @@ export class FX {
     this.startMapEffects();
   }
 
-  // info_particle_system: control point 0 is the entity, cpointN names the entity for point N. Starts active, or
-  // when the map's logic_auto starts it on spawn; effects started later by other map logic aren't run.
+  /**
+   * info_particle_system: control point 0 is the entity, cpointN names the entity for point N. Starts active, or
+   * when the map's logic_auto starts it on spawn; effects started later by other map logic aren't run.
+   */
   startMapEffects() {
     const ents = this.bsp.entities, onSpawn = new Set();
     for (const e of ents) if (e.classname === 'logic_auto' && e.OnMapSpawn) { const [target, input] = String(e.OnMapSpawn).split(/[\x1b,]/); if (input === 'Start') onSpawn.add(target); }
@@ -65,7 +72,13 @@ export class FX {
     }
   }
 
-  // A flying throwable's trail follows it; it stops emitting when the throwable is gone
+  /**
+   * A flying throwable's trail follows it; it stops emitting when the throwable is gone
+   * @param {number} id The throwable's id.
+   * @param {number[]} pos Position.
+   * @param {number[]} vel Velocity.
+   * @param {string} type Throwable type.
+   */
   starTrail(id, pos, vel, type) {
     this.stars ??= new Map();
     let h = this.stars.get(id);
@@ -89,8 +102,13 @@ export class FX {
   }
 
   // ------------------------------------------------------------ dispatch
-  // [1803f6c90] combat effects. The switch value is the hit result; the origin and angles come from the
-  // trace, and the sim passes the swing direction as the angle [1803d7370].
+  /**
+   * [1803f6c90] combat effects. The switch value is the hit result; the origin and angles come from the
+   * trace, and the sim passes the swing direction as the angle [1803d7370].
+   * The effects for a game event.
+   * @param {object} e The event.
+   * @param {object[]} players Fighters in the latest snapshot.
+   */
   onEvent(e, players) {
     const pl = (id) => players?.find((p) => p.id === id);
     const at = (pos, dir) => makeCP(pos, dir ?? [1, 0, 0]);
@@ -158,7 +176,14 @@ export class FX {
     }
   }
 
-  // Per-player state a frame needs, from the same pose used to draw the character
+  /**
+   * Per-player state a frame needs, from the same pose used to draw the character
+   * @param {object} p A fighter from the snapshot.
+   * @param {Character} char The character.
+   * @param {number[][]} world Each bone's world matrix.
+   * @param {number} gripBone sword_grip's index.
+   * @param {number[]} color Trail color.
+   */
   updatePlayer(p, char, world, gripBone, color) {
     let s = this.players.get(p.id);
     if (!s) { s = { trail: [], fade: 1, charge: 0, parry: null }; this.players.set(p.id, s); }
@@ -193,6 +218,9 @@ export class FX {
   }
 
   // ------------------------------------------------------------ simulation
+  /**
+   * @param {number} dt Seconds.
+   */
   step(dt) {
     this.time += dt;
     for (const s of this.players.values()) {
@@ -204,7 +232,14 @@ export class FX {
   }
 
   // ------------------------------------------------------------ geometry
-  // Returns the vertex array and draw ranges; materials still loading are skipped for the frame.
+  /**
+   * Returns the vertex array and draw ranges; materials still loading are skipped for the frame.
+   * @param {number[]} eye Camera position.
+   * @param {number[]} right Camera right.
+   * @param {number[]} up Camera up.
+   * @param {number} fovTan Tangent of half the vertical field of view.
+   * @returns {{count: number, draws: Array}} Vertices written, and what to draw.
+   */
   build(eye, right, up, fovTan) {
     const v = this.verts;
     let n = 0;

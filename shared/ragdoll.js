@@ -6,6 +6,10 @@ import { matMul, quatMatrix } from './mathx.js';
 const SUBSTEPS = 4, GRAVITY = 800; // sv_gravity; the player's 3x multiplier is its own movement code
 const MAX_SPEED = 2000;
 
+/**
+ * @param {Uint8Array} bytes .phy contents.
+ * @returns {{solids: object[], constraints: object[]}} The model's bodies and joints, with their physics values.
+ */
 export function parsePhy(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let o = dv.getInt32(0, true);
@@ -43,8 +47,21 @@ function matQuat(m) {
 const toLocalPoint = (m, p) => { const d = [p[0] - m[3], p[1] - m[7], p[2] - m[11]]; return [m[0] * d[0] + m[4] * d[1] + m[8] * d[2], m[1] * d[0] + m[5] * d[1] + m[9] * d[2], m[2] * d[0] + m[6] * d[1] + m[10] * d[2]]; };
 const origin = (m) => [m[3], m[7], m[11]];
 
+/**
+ * One dead fighter's body, from the pose it died in.
+ */
 export class Ragdoll {
-  // world: this frame's bones; prevWorld: last frame's, for the motion the body was already in; vel: the fighter's velocity
+  /**
+   * world: this frame's bones; prevWorld: last frame's, for the motion the body was already in; vel: the fighter's velocity
+   * @param {Character} char The character.
+   * @param {object} def From parsePhy.
+   * @param {BSP} bsp The map, to collide with.
+   * @param {object} pose The pose it died in.
+   * @param {number[][]} world This frame's bones.
+   * @param {number[][]} [prevWorld] Last frame's bones.
+   * @param {number} dt Seconds between them.
+   * @param {number[]} vel The fighter's velocity.
+   */
   constructor(char, def, bsp, pose, world, prevWorld, dt, vel) {
     Object.assign(this, { char, bsp, pose });
     this.time = 0;
@@ -158,6 +175,9 @@ export class Ragdoll {
     }
   }
 
+  /**
+   * @param {number} dt Seconds.
+   */
   step(dt) {
     if (dt <= 0 || this.asleep) return;
     this.time += dt;
@@ -196,7 +216,11 @@ export class Ragdoll {
     if (this.slow > 0.5) { this.asleep = true; for (const b of this.bodies) { b.v = [0, 0, 0]; b.w = [0, 0, 0]; } }
   }
 
-  // Solids take their body's frame; every other bone rides its parent in the pose it died in
+  /**
+   * Solids take their body's frame; every other bone rides its parent in the pose it died in
+   * @param {number[]} world The entity's matrix.
+   * @returns {number[][]} Each bone's world matrix.
+   */
   bones(world) {
     const { char, pose, byBone } = this;
     const out = new Array(char.bones.length);

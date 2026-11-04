@@ -39,6 +39,9 @@ const SWOOSH = { 'weapon_blade.balanced': 'soundswooshbalanced', 'weapon_blade.r
 const HIT_KEY = ['soundhitbalanced', 'soundhitfast', 'soundhitheavy', 'soundhitbalanced'];
 const SILENT = new Set(['chan_static']);
 
+/**
+ * The game's sound scripts: gameplay events, animation sounds, footsteps by surface, and map soundscapes.
+ */
 export class Audio {
   constructor(fetchGame, info, bsp) {
     Object.assign(this, { fetchGame, info, bsp, ctx: null, sounds: new Map(), scapes: new Map(), buffers: new Map(), voices: [], pos: new Map(), tracks: new Map(), scape: null, scapeName: null, lastCi: new Map(), played: [], failed: new Set(), surfaces: new Map(), materials: new Map() });
@@ -71,7 +74,9 @@ export class Audio {
     this.scapeEnts = this.bsp.entities.filter((e) => e.classname === 'env_soundscape' && e.soundscape && e.origin).map((e) => ({ name: e.soundscape.toLowerCase(), radius: num(e.radius, -1), o: e.origin.split(' ').map(Number) }));
   }
 
-  // Browsers only allow audio once the player has clicked something
+  /**
+   * Browsers only allow audio once the player has clicked something
+   */
   start() {
     if (this.ctx) { this.ctx.resume(); return; }
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -92,7 +97,15 @@ export class Audio {
     return this.buffers.get(key);
   }
 
-  // pos or ent places the sound in the world; neither plays it flat, like the announcer
+  /**
+   * pos or ent places the sound in the world; neither plays it flat, like the announcer
+   * @param {string} name Sound script name.
+   * @param {object} [o] Options.
+   * @param {*} [o.ent] Entity to follow.
+   * @param {number[]} [o.pos] Fixed position.
+   * @param {number} [o.volume] Volume scale.
+   * @param {function(): boolean} [o.still] Checked before playing; false cancels it.
+   */
   async play(name, { ent = null, pos = null, volume = 1, still = null } = {}) {
     if (!this.ctx) return;
     const def = this.sounds.get(String(name).toLowerCase());
@@ -126,14 +139,20 @@ export class Audio {
 
   stop(v) { try { v.src.stop(); } catch { /* already finished */ } }
 
-  // [R 180384aca] the game silences a throwable with its "sounddispatchnull", an empty sound on the same channel
+  /**
+   * [R 180384aca] the game silences a throwable with its "sounddispatchnull", an empty sound on the same channel
+   * @param {number} id The throwable's id.
+   */
   endStar(id) {
     const ent = `star${id}`;
     this.pos.delete(ent);
     for (const v of [...this.voices]) if (v.ent === ent) this.stop(v);
   }
 
-  // Source's falloff: attenuation from the sound level, against a 1000 unit clip distance. 0 and very loud are flat.
+  /**
+   * Source's falloff: attenuation from the sound level, against a 1000 unit clip distance. 0 and very loud are flat.
+   * @param {object} v A playing voice.
+   */
   place(v) {
     const p = (v.ent != null ? this.pos.get(v.ent) : null) ?? v.pos;
     let g = v.volume, pan = 0;
@@ -155,7 +174,11 @@ export class Audio {
   }
 
   // ---------------------------------------------------------------- animation events
-  // Called for every snapshot: fires the events each playing sequence crossed since the last one
+  /**
+   * Called for every snapshot: fires the events each playing sequence crossed since the last one
+   * @param {object} snap The snapshot.
+   * @param {function(string): Character} charOf Character by key.
+   */
   onSnap(snap, charOf) {
     for (const p of snap.players) {
       this.pos.set(p.id, p.o);
@@ -170,7 +193,11 @@ export class Audio {
     }
   }
 
-  // [R client.dll 1802c0106] the spin starts 0.1s into a charge and is cut off when it ends. The file has no cue chunk, so it plays once.
+  /**
+   * [R client.dll 1802c0106] the spin starts 0.1s into a charge and is cut off when it ends. The file has no cue chunk, so it plays once.
+   * @param {number} t Time in seconds.
+   * @param {object} p A fighter from the snapshot.
+   */
   chargeSpin(t, p) {
     const charging = p.a?.ph === 'charge' && p.a.ce > 0.1;
     if (charging === !!t.charging) return;
@@ -222,8 +249,13 @@ export class Audio {
     }
   }
 
-  // [R client.dll 1803e47dd, 1803e4808] <Character>.<Surface>.Step<Side>, then the plain <Surface>.Step<Side>. The surface
-  // comes from what's underfoot: its material's $surfaceprop, then surfaceproperties.txt.
+  /**
+   * [R client.dll 1803e47dd, 1803e4808] <Character>.<Surface>.Step<Side>, then the plain <Surface>.Step<Side>. The surface
+   * comes from what's underfoot: its material's $surfaceprop, then surfaceproperties.txt.
+   * @param {object} p A fighter from the snapshot.
+   * @param {string} side 'Left' or 'Right'.
+   * @param {string} run 'Run', or empty for a walk.
+   */
   async footstep(p, side, run) {
     const tr = this.bsp.traceBox([p.o[0], p.o[1], p.o[2] + 4], [p.o[0], p.o[1], p.o[2] - 36], [0, 0, 0], [0, 0, 0], 1);
     const surface = await this.surfaceAt(tr.texinfo);
@@ -252,7 +284,10 @@ export class Audio {
     return include ? this.materialSurface(String(include).toLowerCase(), depth + 1) : 'Default';
   }
 
-  // "Tile.StepLeft" gives Tile; a surface without its own step sound uses its base's
+  /**
+   * "Tile.StepLeft" gives Tile; a surface without its own step sound uses its base's
+   * @param {string} prop Surface property name.
+   */
   stepSurface(prop) {
     for (let s = prop, i = 0; s && i < 8; i++) {
       const def = this.surfaces.get(s);
@@ -264,6 +299,12 @@ export class Audio {
   }
 
   // ---------------------------------------------------------------- game events
+  /**
+   * Plays what a game event sounds like.
+   * @param {object} e The event.
+   * @param {object[]} players Fighters in the latest snapshot.
+   * @param {number} myId The local player's id.
+   */
   onEvent(e, players, myId) {
     const sw = (id) => this.info.swordSounds?.[players?.find((p) => p.id === id)?.sw] ?? {};
     switch (e.type) {
@@ -311,7 +352,11 @@ export class Audio {
     }
   }
 
-  // [R client.dll 1803de6b3] the string reset cue, when a combo in progress times out
+  /**
+   * [R client.dll 1803de6b3] the string reset cue, when a combo in progress times out
+   * @param {number} id Player id.
+   * @param {number} ci Their string position.
+   */
   onCombo(id, ci) {
     const was = this.lastCi.get(id) ?? 0;
     this.lastCi.set(id, ci);

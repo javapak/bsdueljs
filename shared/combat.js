@@ -12,8 +12,18 @@ export const DEF_NONE = 0, DEF_BLOCK = 1, DEF_PARRY = 2;
 const EPS = fr(1.1920929e-07);
 const minss = (a, b) => (a < b ? a : b);
 const maxss = (a, b) => (a > b ? a : b);
+/**
+ * A sword script value as the game reads it: a key the sword doesn't set reads as -1, not 0.
+ * @param {number|null|undefined} x The value.
+ * @returns {number} The value, or -1 if missing.
+ */
 export const sv = (x) => (x === undefined || x === null ? -1 : x); // SwordValue.Get(): missing reads -1
 
+/**
+ * Normalizes a vector in place, with the small epsilon the original adds to avoid dividing by zero.
+ * @param {number[]} v Vector [x, y, z], changed in place.
+ * @returns {number[]} The same array.
+ */
 export function normalizeFast(v) {
   let l = fr(fr(v[0] * v[0]) + fr(v[1] * v[1]));
   l = fr(l + fr(v[2] * v[2]));
@@ -22,6 +32,13 @@ export function normalizeFast(v) {
   return v;
 }
 
+/**
+ * How directly a defender faces an attacker, on the flat plane only.
+ * @param {number[]} def Defender origin.
+ * @param {number[]} att Attacker origin.
+ * @param {number[]} fwd Defender forward.
+ * @returns {number} 1 facing dead on, 0 side on, -1 back turned.
+ */
 function facingDot(def, att, fwd) {
   const to = [fr(att[0] - def[0]), fr(att[1] - def[1]), 0];
   const f = [fwd[0], fwd[1], 0];
@@ -30,6 +47,14 @@ function facingDot(def, att, fwd) {
   return fr(d + fr(f[2] * to[2]));
 }
 
+/**
+ * Longsword and scimitar block. It has to face the attacker past `blockDotProduct`, or the block doesn't count at all.
+ * A tier 3 from a sword with tier3shouldbreakblock breaks it. Anything else lands as chip damage and scaled knockback.
+ * @param {object} i Hit: defenderOrigin, attackerOrigin, defenderForward, attackerInAttackAction, attackerTier, swordBreaksBlockAtTier3.
+ * @param {object} t Tuning: blockDotProduct, blockChipDamage, knockbackBlock.
+ * @param {{damage: number, force: number[]}} dmg Replaced with the chip damage and scaled force when blocked.
+ * @returns {{outcome: number, facingDot: number}} outcome is BLOCK_NOTFACING, BLOCK_BLOCKED or BLOCK_BROKEN.
+ */
 export function resolveBlock(i, t, dmg) {
   const dot = facingDot(i.defenderOrigin, i.attackerOrigin, i.defenderForward);
   const r = { outcome: BLOCK_NOTFACING, facingDot: dot };
@@ -41,6 +66,15 @@ export function resolveBlock(i, t, dmg) {
   return r;
 }
 
+/**
+ * Jian intercept. The defender needs only to face the attacker's half (dot above 0). A tier 3 from a sword with
+ * tier3shouldbreakparry, or an unparryable action, breaks it. Otherwise the timing decides: inside the parry window the hit
+ * does no damage, and the attacker is stunned with their momentum scaled; outside it, it's a miss and the hit lands.
+ * @param {object} i Hit: origins, defenderForward, attackerHasAction, attackerTier, attackerActionId, attackerStanceType, swordBreaksParryAtTier3, inParryWindow, attackerAbsVelocity.
+ * @param {object} t Tuning: knockbackIntercept, interceptMomentumScale, interceptTime.
+ * @param {{damage: number, force: number[]}} dmg Zeroed damage and scaled force when intercepted.
+ * @returns {object} outcome (PARRY_*), recoil, stunAttacker, attackerReaction, attackerVelocity, defenderLockTimer.
+ */
 export function resolveParry(i, t, dmg) {
   const r = { outcome: PARRY_NOTFACING, recoil: [0, 0, 0], stunAttacker: false, attackerReaction: null, attackerVelocity: [0, 0, 0], defenderLockTimer: 0 };
   if (!(facingDot(i.defenderOrigin, i.attackerOrigin, i.defenderForward) > 0)) return r;
@@ -62,6 +96,13 @@ export function resolveParry(i, t, dmg) {
   return r;
 }
 
+/**
+ * Who wins when two blades meet. Higher beats lower, and equal staggers both.
+ * Unparryable or sheathed 6, heavy 4, balanced 3, fast 2. Air is 1, except 5 against heavy.
+ * @param {object} self This fighter: stanceType, actionId, sheathedAttack.
+ * @param {object} opp The other fighter: stanceType.
+ * @returns {number} The priority.
+ */
 export function clashPriority(self, opp) {
   if (self.sheathedAttack || self.actionId === ACTION_UNPARRYABLE) return 6;
   switch (self.stanceType) {
@@ -73,6 +114,14 @@ export function clashPriority(self, opp) {
   }
 }
 
+/**
+ * One fighter's side of a clash. Hitstop grows with the higher priority present (0.1s + 0.05s per rank). Only a fighter who
+ * didn't out-prioritise the other is staggered, with recovery by tier difference and sword multipliers, and knockback away from the opponent.
+ * @param {object} self This fighter's state, from World.fighter.
+ * @param {object} opp The other fighter's state.
+ * @param {object} t Tuning: recovery*, turnParryAngle, kbParry, kbAirParry, kbAirParryUp, kbKeepMomentum.
+ * @returns {object} hitstop, turnToward, turnAmount, staggered, setLockTimer, lockTimer, knockback, stanceType.
+ */
 function applyClash(self, opp, t) {
   const s = { hitstop: 0, turnToward: 0, turnAmount: 0, staggered: false, setLockTimer: false, lockTimer: 0, knockback: [0, 0, 0], stanceType: self.stanceType };
   const sr = clashPriority(self, opp), or = clashPriority(opp, self);
@@ -107,6 +156,13 @@ function applyClash(self, opp, t) {
   return s;
 }
 
+/**
+ * Resolves two blades meeting, for both fighters.
+ * @param {object} a One fighter's state.
+ * @param {object} b The other's.
+ * @param {object} t Tuning, as for applyClash.
+ * @returns {object} delta (a's priority minus b's), swapped (b outranked a), low and high (each side's result), effectOrigin, effectKind.
+ */
 export function resolveClash(a, b, t) {
   const delta = clashPriority(a, b) - clashPriority(b, a);
   const swapped = delta < 0;
@@ -119,6 +175,18 @@ export function resolveClash(a, b, t) {
   return r;
 }
 
+/**
+ * Damage falloff over a run of landed swings. Each new swing inside `scalingTime` of the last adds to the count, up to 15.
+ * Past `scalingAttacks`, each extra swing takes off damage down to `damageMinimum` of full (never under 1), adds knockback
+ * up to 3x, and pushes the attacker back away from the victim.
+ * @param {object} att Attacker's counters, changed in place: hitsThisSwing, comboCount, comboResetTime.
+ * @param {number} curtime Current time in seconds.
+ * @param {number[]} attOrigin Attacker origin.
+ * @param {number[]} vicOrigin Victim origin.
+ * @param {object} t Tuning: scalingTime, scalingAttacks, scalingKnockback, scalingDamage, damageMinimum, attackerPush, attackerPushMax.
+ * @param {{damage: number, force: number[]}} dmg Scaled in place.
+ * @returns {{scaled: boolean, attackerPush: number[]}} Whether scaling applied, and the attacker's push.
+ */
 export function applyComboScaling(att, curtime, attOrigin, vicOrigin, t, dmg) {
   const r = { scaled: false, attackerPush: [0, 0, 0] };
   if (att.hitsThisSwing === 0) {
@@ -143,6 +211,11 @@ export function applyComboScaling(att, curtime, attOrigin, vicOrigin, t, dmg) {
   return r;
 }
 
+/**
+ * Floors the way the original's float-to-int conversion does, including its handling of values out of int range.
+ * @param {number} x The value.
+ * @returns {number} The floored value.
+ */
 function floorLikeOriginal(x) {
   if (!(x >= -2147483648 && x < 2147483648)) return x;
   const i = Math.trunc(x);
@@ -150,6 +223,15 @@ function floorLikeOriginal(x) {
   return fr(i - (x < 0 || Object.is(x, -0) ? 1 : 0));
 }
 
+/**
+ * A sword hit's damage before block, parry and combo scaling. In order: tier damage, times the swing-progress bonus,
+ * sword damageX, stance multiplier, forward or side multiplier, the parry multiplier on a victim stunned that way, and
+ * multiHitScale for each earlier hit in the swing. The result is floored and can't go under the sword's minimum for that tier.
+ * @param {object} i Hit: attackerInAttackAction, sword, tierDamage, swingProgress, stanceType, direction, victimStunType, hitsThisSwing, actionId, tier.
+ * @param {number} globalScale bb_global_damagescale.
+ * @param {function(number, number): number} [pow] Single precision power function.
+ * @returns {number} The damage, 0 if not attacking.
+ */
 export function computeAttackDamage(i, globalScale, pow = (b, e) => fr(Math.pow(b, e))) {
   if (!i.attackerInAttackAction) return 0;
   const sw = i.sword;
@@ -192,8 +274,21 @@ export function computeAttackDamage(i, globalScale, pow = (b, e) => fr(Math.pow(
 }
 
 const ucomissNE = (a, b) => !(a === b || Number.isNaN(a) || Number.isNaN(b));
+/**
+ * The direction a hit counts as: a back attack is treated as forward.
+ * @param {number} d Attack direction: 0 forward, 1 right, 2 back, 3 left.
+ * @returns {number} The hit direction.
+ */
 export const hitDirection = (d) => (d === 2 ? 0 : d);
 
+/**
+ * What a resolved hit does to both fighters. An undefended hit slows the victim's turning and, on the swing's first hit,
+ * turns them. A tier 3 or unparryable hit adds 0.15s of hitstop, up to the cap, and later hits in a multi-hit use
+ * hitstopMultihitTime if set. The attacker's lock shrinks by the sword's recoveryBonusOnHit.
+ * @param {object} c Hit: defense, resultAfterDefense, blockReturnedTrue, attackerDirection, attackerTier, attackerActionId, hitsThisSwing, attackerLockTimer, attackerForce, hitImpulse, turnSelfX, recoveryBonusOnHit.
+ * @param {object} t Tuning: turnAttackAngle, hitstopTime, hitstopTimeMax, hitstopMultihitTime.
+ * @returns {object} hitDirection, incrementMultiBlock, slowVictimTurnRate, turnVictim, turnAmount, landed, setAttackerForce, attackerForce, setLockTimer, lockTimer, hitsThisSwing, hitstop.
+ */
 export function resolveHitOutcome(c, t) {
   const o = { hitDirection: hitDirection(c.attackerDirection), incrementMultiBlock: c.defense === DEF_BLOCK && c.blockReturnedTrue,
     slowVictimTurnRate: false, turnVictim: false, turnAmount: 0 };

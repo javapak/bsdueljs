@@ -20,12 +20,21 @@ const { values: args } = parseArgs({ options: {
   bot: { type: 'boolean', default: false }, host: { type: 'string', default: '0.0.0.0' },
 } });
 const roots = [join(args.game, 'berimbau'), join(args.game, 'core')];
+/**
+ * Finds a game file by relative path, and refuses any path that would leave the game folder.
+ * @param {string} rel Path under the game.
+ * @returns {string|null} The full path.
+ */
 const findFile = (rel) => {
   const clean = normalize(rel).replace(/\\/g, '/');
   if (clean.startsWith('..') || clean.startsWith('/') || clean.includes('/../')) return null;
   for (const r of roots) { const p = join(r, clean); if (p.startsWith(r + sep) && existsSync(p) && statSync(p).isFile()) return p; }
   return null;
 };
+/**
+ * @param {string} rel Path under the game.
+ * @returns {string} The full path; throws if missing.
+ */
 const need = (rel) => { const p = findFile(rel); if (!p) throw new Error('missing game file: ' + rel); return p; };
 
 const cvarTable = JSON.parse(readFileSync(join(here, '../shared/cvars_all.json')));
@@ -40,6 +49,11 @@ const world = new World({ bsp, data, cvars, assets, map: args.map });
 console.log(`map ${args.map}, ${Object.keys(data.characters).length} characters, ${Object.keys(data.actions).length} actions`);
 
 // ---------------------------------------------------------------- WebSocket (RFC 6455, text frames)
+/**
+ * A minimal WebSocket server with no dependencies: the handshake, framing and text messages.
+ * @param {object} req The upgrade request.
+ * @param {object} socket Its socket.
+ */
 function wsAccept(req, socket) {
   const key = req.headers['sec-websocket-key'];
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
@@ -80,6 +94,9 @@ const conns = new Set();
 let nextId = 1;
 // With --bot, anyone alone in an arena's queue gets a bot; it goes as soon as there's a second person
 const arenaBots = new Map();
+/**
+ * With --bot, gives anyone alone in an arena's queue a bot, and removes it once there's a second person.
+ */
 function syncBots() {
   if (!args.bot) return;
   for (const d of world.duels) {
@@ -99,7 +116,11 @@ function syncBots() {
     }
   }
 }
-// vs_ready [R 180358f90]: joins the arena's queue or leaves it. A fighter stays for the match and leaves after it.
+/**
+ * vs_ready [R 180358f90]: joins the arena's queue or leaves it. A fighter stays for the match and leaves after it.
+ * @param {Player} p The player.
+ * @param {number} arena Arena index.
+ */
 function toggleReady(p, arena) {
   const cur = world.duels.find((d) => d.queue.includes(p));
   const to = world.duels[arena] ?? world.duels[0];
@@ -113,8 +134,13 @@ function toggleReady(p, arena) {
   syncBots();
 }
 
-// What a client asks to wear, kept to items for this character: one skin, mask and cape, one attachment per slot,
-// and always a mask because the fighter models have no head of their own.
+/**
+ * What a client asks to wear, kept to items for this character: one skin, mask and cape, one attachment per slot,
+ * and always a mask because the fighter models have no head of their own.
+ * @param {number[]} ids Item ids asked for.
+ * @param {string} ch Character key.
+ * @returns {number[]} The ids allowed.
+ */
 function validLook(ids, ch) {
   const out = new Map();
   for (const id of Array.isArray(ids) ? ids : []) {
@@ -125,9 +151,18 @@ function validLook(ids, ch) {
   return [...out.values()];
 }
 
-// The color picker's value, 0 to 255
+/**
+ * The color picker's value, 0 to 255
+ * @param {*} c What the client sent.
+ * @returns {number[]|null} [r, g, b], or null if it isn't a color.
+ */
 const validColor = (c) => (Array.isArray(c) && c.length === 3 && c.every(Number.isFinite) ? c.map((x) => Math.max(0, Math.min(255, Math.round(x)))) : null);
 
+/**
+ * A client's message: 'join', 'view', 'ready', 'cmd' (buttons and aim, every 15ms), 'loadout' or 'character'.
+ * @param {object} c The connection.
+ * @param {object} m The message.
+ */
 function onMessage(c, m) {
   if (m.t === 'join') {
     if (c.player) return;
@@ -163,6 +198,9 @@ function onMessage(c, m) {
     c.player.character = m.character;
   }
 }
+/**
+ * @param {object} c The connection.
+ */
 function onClose(c) {
   if (!conns.delete(c)) return;
   if (c.player) {
@@ -172,8 +210,16 @@ function onClose(c) {
   }
 }
 
+/**
+ * @param {number} x A value.
+ * @returns {number} Rounded to two places, to keep snapshots small.
+ */
 const rnd = (x) => Math.round(x * 100) / 100;
 const rnd3 = (x) => Math.round(x * 1000) / 1000;
+/**
+ * Everything clients draw from, sent every second tick (32 a second): each fighter in short field names, and each arena's state, queue and watchers.
+ * @returns {object} The snapshot.
+ */
 function snapshot() {
   return {
     t: 'snap', time: rnd(world.time), pj: world.stars.map((s) => ({ id: s.id, k: s.type, o: s.pos.map(rnd), v: s.vel.map(rnd) })), players: world.players.map((p) => {

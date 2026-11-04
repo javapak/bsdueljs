@@ -8,6 +8,11 @@ export const SURF_TRANS = 0x10, SURF_NODRAW = 0x80, SURF_SKY = 0x4, SURF_SKY2D =
 const DIST_EPSILON = 0.03125;
 
 const dec = new TextDecoder('latin1');
+/**
+ * @param {Uint8Array} u8 Bytes.
+ * @param {number} off Where the string starts.
+ * @returns {string} The zero-terminated string.
+ */
 export function cstr(u8, off) {
   let e = off;
   while (e < u8.length && u8[e]) e++;
@@ -17,7 +22,13 @@ export function cstr(u8, off) {
 import { parseConvexPieces, propMatrix, placePiece } from './phy.js';
 const PROP_CELL = 256;
 
+/**
+ * A compiled map: geometry, entities, static props and pack file, with the box traces movement and the blade use.
+ */
 export class BSP {
+  /**
+   * @param {Uint8Array} buffer The .bsp file.
+   */
   constructor(buffer) {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
     this.bytes = bytes;
@@ -201,7 +212,10 @@ export class BSP {
     return out;
   }
 
-  // Builds the (2^p+1)^2 grid of a displacement. Returns {size, pos[], uvCorner info}.
+  /**
+   * Builds the (2^p+1)^2 grid of a displacement. Returns {size, pos[], uvCorner info}.
+   * @param {number} di Displacement index.
+   */
   dispGrid(di) {
     const face = this.faces[di.mapFace];
     const corners = this.faceVerts(face);
@@ -310,7 +324,15 @@ export class BSP {
   }
 
   // ---------------------------------------------------------------- tracing
-  // Sweep an AABB (mins/maxs relative to the swept point). Returns Source-like trace_t.
+  /**
+   * Sweep an AABB (mins/maxs relative to the swept point). Returns Source-like trace_t.
+   * @param {number[]} start Sweep start.
+   * @param {number[]} end Sweep end.
+   * @param {number[]} mins Box minimum.
+   * @param {number[]} maxs Box maximum.
+   * @param {number} [mask] Contents that block it.
+   * @returns {object} fraction, endpos, normal, startsolid, allsolid, contents, texinfo.
+   */
   traceBox(start, end, mins, maxs, mask = MASK_PLAYERSOLID) {
     const ext = [(maxs[0] - mins[0]) * 0.5, (maxs[1] - mins[1]) * 0.5, (maxs[2] - mins[2]) * 0.5];
     const off = [(maxs[0] + mins[0]) * 0.5, (maxs[1] + mins[1]) * 0.5, (maxs[2] + mins[2]) * 0.5];
@@ -420,7 +442,10 @@ export class BSP {
     }
   }
 
-  // Solid static props, from their models' .phy. read(path) gives the file's bytes, or null if it's missing.
+  /**
+   * Solid static props, from their models' .phy. read(path) gives the file's bytes, or null if it's missing.
+   * @param {function(string): Promise<Uint8Array|null>} read Reads a game file.
+   */
   async addPropCollision(read) {
     const { names, props } = this.staticProps();
     const pieces = new Map();
@@ -555,6 +580,10 @@ export class BSP {
     }
   }
 
+  /**
+   * @param {number[]} p A point.
+   * @returns {number} The BSP leaf it's in.
+   */
   pointLeaf(p) {
     let num = 0;
     while (num >= 0) {
@@ -565,11 +594,17 @@ export class BSP {
     return -1 - num;
   }
 
+  /**
+   * @returns {object[]} Entities whose classname looks like a spawn.
+   */
   spawnPoints() {
     return this.entities.filter((e) => /info_player|berimbau_spawn|spawn/i.test(e.classname || ''));
   }
 
-  // Static props from the sprp game lump: returns {names, props:[{model,origin,angles,solid,skin}]}
+  /**
+   * Static props from the sprp game lump: returns {names, props:[{model,origin,angles,solid,skin}]}
+   * @returns {{names: string[], props: object[]}} Model names, and each prop's model, origin, angles, solid and skin.
+   */
   staticProps() {
     const { dv } = this;
     const gl = this.lump(35);
@@ -602,7 +637,10 @@ export class BSP {
     return { names: [], props: [] };
   }
 
-  // Embedded pak (zip, stored). Returns Map lowercase path -> {off,len,method}
+  /**
+   * Embedded pak (zip, stored). Returns Map lowercase path -> {off,len,method}
+   * @returns {Map<string, {off: number, len: number, method: number}>} Lower case path to where its data is.
+   */
   pakIndex() {
     if (this._pak) return this._pak;
     const { dv } = this;

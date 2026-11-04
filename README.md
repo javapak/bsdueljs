@@ -9,11 +9,13 @@ This does **not** use or connect to the original `client.dll`/`server.dll`, and 
 
 ## Run
 
-    node server/main.mjs --bot                  # practice against a bot on duel_temple
-    node server/main.mjs --map duel_winter      # wait for a second human
+    node server/main.mjs --game "<install>" --bot                  # practice against a bot on duel_temple
+    node server/main.mjs --game "<install>" --map duel_winter      # no bot: walk around until a second person joins
 
-Open http://localhost:27015 in a WebGPU browser, pick a character, and click into the window to
-capture the mouse. Options: `--map`, `--port`, `--bot`, `--game <install dir>`, `--host`.
+`<install>` is your Blade Symphony folder, the one holding `berimbau`. You can leave out `--game` only if this repo sits two folders inside it.
+
+Open http://localhost:27015 in a WebGPU browser, pick a character, and confirm. You start out watching: press `R` to join the arena's queue, then click into the window to
+capture the mouse. Other options: `--port`, `--host`.
 Maps: duel_temple, duel_monastery, duel_castle, duel_district, duel_winter, duel_box, duel_practice_box.
 
 The server listens on all network interfaces by default so a friend on your LAN can join. Anyone who
@@ -22,13 +24,13 @@ can reach the port can download files from your game folder. It has no authentic
 
 Controls: WASD move (also picks the attack direction), Mouse1 attack (hold to charge), Mouse2 block,
 1/2/3 fast/balanced/heavy, Space jump, Ctrl roll, Shift shuffle, Q grab (press while grabbed to break free), Alt walk.
-These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapon key; throwing weapons aren't implemented, so it does nothing here.
+E throw, R join or leave the queue, M customize, Tab scoreboard. These follow the game's `cfg/config_default.cfg`.
 
 ## Layout
 
 | path | what |
 |---|---|
-| `shared/combat.js` | port of `../rewrite/combat`; bit-identical to the C++ rules |
+| `shared/combat.js` | port of a separate C++ rewrite of the combat rules, which isn't in this repo; bit-identical to it |
 | `shared/sim.js` | movement, action state machine, sword tracers, duel rounds |
 | `shared/bsp.js`, `mdl.js`, `kv.js`, `gamedata.js` | game file formats and script loading |
 | `shared/bot.js` | practice bot |
@@ -40,7 +42,7 @@ These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapo
 
 | command | checks |
 |---|---|
-| `node tests/combat_diff.mjs 20000` | JS rules vs native C++, all 6 rules, bit for bit |
+| `node tests/combat_diff.mjs 20000` | JS rules vs native C++, all 6 rules, bit for bit. Needs `clang++` and that C++ rewrite at `../rewrite/combat` beside this repo, so it won't run from a fresh clone |
 | `node tests/walk_check.mjs "<install>"` | spawns clear, and paths walkable in every arena of every duel map |
 | `node tests/anim_check.mjs "<install>"` | blended root motion matches real movement in 8 directions, every character and stance; stride scales with speed |
 | `node tests/move_check.mjs "<install>"` | animation clocks run in real time at the game's playback rate; shuffle, roll and throw timing and travel |
@@ -50,7 +52,10 @@ These follow the game's `cfg/config_default.cfg`. E is the game's throwing-weapo
 | `node tests/exposure_check.mjs "<install>"` | auto exposure's direction, the map's limits, and the bright-pixel search |
 | `node tests/hit_check.mjs "<install>"` | a tapped attack on a stationary fighter lands across one continuous band of ranges, every character and stance |
 | `node tests/particle_check.mjs "<install>/berimbau"` | every dispatched effect runs on real data, emits, and finishes; the effects maps place are implemented and stay finite |
-| `node tests/queue_check.mjs "<install>"` | arena queues on a three-arena map: who plays, order after a win, loss and draw, leaving, bots, and arenas not touching |
+| `node tests/queue_check.mjs "<install>"` | arena queues on a three-arena map: who plays, order after a win, loss and draw, leaving, bots, arenas not touching, and one alone walking around |
+| `node tests/sword_check.mjs "<install>"` | every sword in the catalog lies along its grip when posed as it's held |
+| `node tests/dash_check.mjs "<install>"` | the charge dash: when it's allowed, what it does, and the vulnerable time after it |
+| `node tests/preview_check.mjs "<install>"` | the attack preview: the attack it names, its path, fades and target highlight |
 | `node tests/wall_check.mjs "<install>"` | wall run, slide, wall jump and run limit, plus throwables: timing, hits, blocks, cancel and delay |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |
 | `node tests/net_check.mjs "<install>"` | full match between two real WebSocket clients; path traversal rejected |
@@ -83,7 +88,7 @@ The client runs the game's own `.pcf` particle definitions and `.vmt` materials 
 
 ## Arenas and spectating
 
-Each `berimbau_duel` on a map runs its own queue and match at the same time (`Duel` in `shared/sim.js`). Fighters only touch others in their arena. Joining the server spectates; `R` (`vs_ready`) joins or leaves the queue of the arena you're watching. A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to the back, read from `server.dll`. People don't wait behind bots, and with `--bot` anyone alone in a queue gets one. Add `?ready=1` to the URL to queue on joining.
+Each `berimbau_duel` on a map runs its own queue and match at the same time (`Duel` in `shared/sim.js`). Fighters only touch others in their arena. Joining the server spectates; `R` (`vs_ready`) joins or leaves the queue of the arena you're watching. One alone can walk around the arena, with no timer on screen, until a second person queues. A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to the back, read from `server.dll`. People don't wait behind bots, and with `--bot` anyone alone in a queue gets one. Add `?ready=1` to the URL to queue on joining.
 
 Holding `Tab` shows every arena in three columns, each with a live view through its camera (one arena renders per frame, without particles, like the game): who's playing with wins-losses and ping, who's queued, who's watching, with Join and View buttons while you have a cursor. Watching: `Space` opens the controls from `spectator_controls.res` (view, player, arena, join, customize), the arrow keys change arena, and the camera is the arena's `berimbau_spectator_camera` with the game's FOV and easing, or a chase view of a fighter.
 
@@ -128,9 +133,13 @@ charge and swing flow, tracer sampling and its clock, blade pose (move params, p
 **Not implemented:** client-side prediction (fine on LAN, will feel laggy over the internet), music,
 ledge climbing and vaulting, sheathing, 3D skybox.
 
-**Shaders:** world surfaces are ported from `lightmappedgeneric_ps30` (bumped and self-shadowed lightmaps, cubemaps, seamless mapping) and the sky from `sky_ps20b`. Exposure follows the game's histogram rule (`shared/exposure.js`), with each map's `env_tonemap_controller` limits. Sun shadows are the game's cascaded shadow maps (three cascades to 400 units, split as in `client.dll`), which take the sun's share out of the lightmap using the per-page bytes each map stores. How a cascade blends at its edge, fade distance and bias are approximate. Still missing on the world: bloom, `$blendmodulatetexture`, `$phong`, `$lightwarptexture` and detail blend modes other than mod2x; unpatched `env_cubemap` uses the map's default cubemap. Characters use `phong_ps30` with the map's ambient cubes and world lights; static props use their baked `.vhv` colors with `phong_ps30` or `vertexlit_and_unlit_generic_bump_ps30`. Which lights a model keeps follows Source's usual rules rather than a read of the engine. Water, `lightmappedreflective` and `refract` surfaces aren't ported.
+**Shaders:** world surfaces are ported from `lightmappedgeneric_ps30` (bumped and self-shadowed lightmaps, cubemaps, seamless mapping) and the sky from `sky_ps20b`. Exposure follows the game's histogram rule (`shared/exposure.js`), with each map's `env_tonemap_controller` limits. Sun shadows are the game's cascaded shadow maps (three cascades to 400 units, split as in `client.dll`), which take the sun's share out of the lightmap using the per-page bytes each map stores. How a cascade blends at its edge, fade distance and bias are approximate. Still missing on the world: bloom, `$blendmodulatetexture`, `$phong`, `$lightwarptexture` and detail blend modes other than mod2x; unpatched `env_cubemap` uses the map's default cubemap. Characters use `phong_ps30` with the map's ambient cubes and world lights; static props use their baked `.vhv` colors with `phong_ps30` or `vertexlit_and_unlit_generic_bump_ps30`. Which lights a model keeps follows Source's usual rules rather than a read of the engine. `lightmappedreflective` surfaces aren't ported.
 
 **Swords:** any character can use any sword from the game's catalog (`scripts/items.json`), chosen on the join menu, which starts on the one the game
-gives that character. The sword and its scabbard are the item's own models and skin, following the fighter's bones of the same names; a scabbard always stays on the body, since sheathing isn't built, and additive parts such as glows aren't drawn. The type sets damage, charge, multi-hit rate and block tech: longsword and
+gives that character. The sword and its scabbard are the item's own models and skin, following the fighter's bones of the same names, with any other bones at the first frame of the model's first sequence [I]; a scabbard always stays on the body, since sheathing isn't built, and additive parts such as glows aren't drawn. The type sets damage, charge, multi-hit rate and block tech: longsword and
 scimitar block, foil guards, jian intercepts. Katana feints: the block button charges the swing the stance and string would give, and letting go plays it with no tracer on a cut lock. It can also cut off a swing before its second blade sample or just after its last, which carries on the same animation with the time spent taken off that cut lock. Every feint restarts the string. Blade
 length is the game's default 40 units for all types.
+
+## License
+
+MIT, see [LICENSE](LICENSE). That covers the code in this repo. Blade Symphony and its files belong to their owners, and you need your own copy of the game to run this.

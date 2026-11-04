@@ -20,6 +20,15 @@ const CSS = `
 #sp .sp-btn{background:#e4e4e4;color:#111}#sp .sp-btn:hover{background:#fff}
 `;
 
+/**
+ * The spectator controls and queue text. Its `view` holds which arena is watched and how.
+ * @param {HTMLElement} root Where it goes.
+ * @param {object} o Options.
+ * @param {string} o.mapName Map name for its messages.
+ * @param {function(): void} o.onReady Join or leave the queue.
+ * @param {function(): void} o.onCustomize Open customization.
+ * @returns {object} view, toggle, cycle, show and update.
+ */
 export function createSpectator(root, { mapName, onReady, onCustomize }) {
   const style = document.createElement('style');
   style.textContent = CSS;

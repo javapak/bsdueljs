@@ -5,7 +5,12 @@ const edge = (i) => Math.pow(i / BUCKETS, 2.5); // [R 18025f301]
 const PERCENT_TARGET = 60, PERCENT_BRIGHT = 2, MIN_AVG_LUM = 3; // [R 180257b0a] with no controller overriding them
 const ACCEL_DOWN = 40; // mat_accelerate_adjust_exposure_down
 
-// Map entities address the controller by name: "OnMapSpawn" "tmc<ESC>SetAutoExposureMax<ESC>1.25<ESC>0<ESC>-1"
+/**
+ * Map entities address the controller by name: "OnMapSpawn" "tmc<ESC>SetAutoExposureMax<ESC>1.25<ESC>0<ESC>-1"
+ * @param {string} entityText The map's entity lump.
+ * @param {string[]} controllers Names of its env_tonemap_controller entities.
+ * @returns {object} min, max, rate, bloomScale, percentTarget, percentBright, minAvgLum.
+ */
 export function tonemapSettings(entityText, controllers) {
   const out = { min: 0.5, max: 2, rate: 1, bloomScale: 1, percentTarget: PERCENT_TARGET, percentBright: PERCENT_BRIGHT, minAvgLum: MIN_AVG_LUM };
   const names = new Set(controllers);
@@ -18,7 +23,14 @@ export function tonemapSettings(entityText, controllers) {
   return out;
 }
 
-// [R 18025d750] Walking down from the brightest bucket, where the brightest `percent` of pixels begins
+/**
+ * [R 18025d750] Walking down from the brightest bucket, where the brightest `percent` of pixels begins
+ * @param {Int32Array} counts Pixels per bucket.
+ * @param {number} total All pixels.
+ * @param {number} percent The percent wanted.
+ * @param {number} target Target percent, or -1 for none.
+ * @returns {number} Luminance, or -1.
+ */
 export function findPercentBright(counts, total, percent, target) {
   if (!total) return -1;
   let seen = 0, span = 0;
@@ -34,10 +46,16 @@ export function findPercentBright(counts, total, percent, target) {
   return -1;
 }
 
+/**
+ * The exposure the frame is drawn with, eased toward what the histogram asks for.
+ */
 export class Exposure {
   constructor() { this.configure({ min: 0.5, max: 2, rate: 1, percentTarget: PERCENT_TARGET, percentBright: PERCENT_BRIGHT, minAvgLum: MIN_AVG_LUM }); }
 
-  // [R 18025ec70] starts midway between the limits, between 1 and 10
+  /**
+   * [R 18025ec70] starts midway between the limits, between 1 and 10
+   * @param {object} settings From tonemapSettings.
+   */
   configure(settings) {
     Object.assign(this, settings);
     this.scale = Math.max(1, Math.min(10, (Math.max(this.min, this.max) + this.min) / 2));
@@ -45,7 +63,11 @@ export class Exposure {
     this.history = [];
   }
 
-  // [R 180257af0] pixels: Float32Array of linear luminance from the current frame, already scaled by this.scale
+  /**
+   * [R 180257af0] pixels: Float32Array of linear luminance from the current frame, already scaled by this.scale
+   * @param {Float32Array} lums Luminance samples.
+   * @returns {number} The new target scale.
+   */
   measure(lums) {
     const counts = new Int32Array(BUCKETS);
     for (const l of lums) {
@@ -63,7 +85,11 @@ export class Exposure {
     return this.push(Math.max(0.001, scale * this.scale));
   }
 
-  // [R 18025edd0] the last ten targets, weighted away from the middle, within the map's limits
+  /**
+   * [R 18025edd0] the last ten targets, weighted away from the middle, within the map's limits
+   * @param {number} target This frame's target.
+   * @returns {number} The smoothed target.
+   */
   push(target) {
     if (this.history.length === 10) this.history.shift();
     this.history.push(target);
@@ -75,7 +101,11 @@ export class Exposure {
     return this.target;
   }
 
-  // [R 18025ef1f] algorithm 1 doubles the rate; going down speeds up with how far there is to go
+  /**
+   * [R 18025ef1f] algorithm 1 doubles the rate; going down speeds up with how far there is to go
+   * @param {number} dt Seconds.
+   * @returns {number} The scale to draw with.
+   */
   step(dt) {
     let rate = this.rate * 2;
     if (this.target < this.scale) {

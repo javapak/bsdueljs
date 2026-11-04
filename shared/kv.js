@@ -1,5 +1,10 @@
-// Valve KeyValues text parser. Duplicate keys are preserved: every node is
-// { key, value } where value is a string or an array of child nodes.
+/**
+ * Valve KeyValues text parser. Duplicate keys are preserved: every node is
+ * { key, value } where value is a string or an array of child nodes.
+ * Handles quoted and bare tokens, // comments, a BOM, stray blocks, and [$WIN32]-style tags after a value (dropped, not evaluated).
+ * @param {string} text File contents.
+ * @returns {Array<{key: string, value: string|Array}>} The top level nodes.
+ */
 export function parseKV(text) {
   let i = 0;
   const n = text.length;
@@ -53,26 +58,55 @@ export function parseKV(text) {
   return block(true);
 }
 
-// Case-insensitive helpers (KeyValues lookups are case-insensitive in the engine).
+/**
+ * Case-insensitive helpers (KeyValues lookups are case-insensitive in the engine).
+ * @param {Array} nodes Nodes to search.
+ * @param {string} key Key, any case.
+ * @returns {{key: string, value: *}|undefined} The first match.
+ */
 export const kvFind = (nodes, key) => {
   if (!Array.isArray(nodes)) return undefined;
   const k = key.toLowerCase();
   return nodes.find((x) => x.key.toLowerCase() === k);
 };
+/**
+ * @param {Array} nodes Nodes to search.
+ * @param {string} key Key, any case.
+ * @param {*} [def] Returned if the key is missing.
+ * @returns {string|Array|*} The value.
+ */
 export const kvGet = (nodes, key, def) => {
   const f = kvFind(nodes, key);
   return f === undefined ? def : f.value;
 };
+/**
+ * @param {Array} nodes Nodes to search.
+ * @param {string} key Key, any case.
+ * @param {number} [def] Returned if missing, a block, empty or not a number.
+ * @returns {number} The value.
+ */
 export const kvNum = (nodes, key, def) => {
   const v = kvGet(nodes, key);
   if (v === undefined || Array.isArray(v) || v === '') return def;
   const f = parseFloat(v);
   return Number.isNaN(f) ? def : f;
 };
+/**
+ * Every node with this key, since KeyValues allows repeats.
+ * @param {Array} nodes Nodes to search.
+ * @param {string} key Key, any case.
+ * @returns {Array} The matches.
+ */
 export const kvAll = (nodes, key) => {
   const k = key.toLowerCase();
   return Array.isArray(nodes) ? nodes.filter((x) => x.key.toLowerCase() === k) : [];
 };
+/**
+ * @param {Array} nodes Nodes to search.
+ * @param {string} key Key, any case.
+ * @param {boolean} [def] Returned if missing.
+ * @returns {boolean} true or false as words, otherwise whether the number is non-zero.
+ */
 export const kvBool = (nodes, key, def) => {
   const v = kvGet(nodes, key);
   if (v === undefined) return def;

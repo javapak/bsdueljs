@@ -17,7 +17,14 @@ function float16(u) {
   return s ? -v : v;
 }
 
+/**
+ * One parsed .mdl: bones, sequences, attachments, hitboxes, pose parameters and textures.
+ */
 export class Model {
+  /**
+   * @param {Uint8Array|ArrayBuffer} buffer File contents.
+   * @param {string} [name] For error messages.
+   */
   constructor(buffer, name = '') {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
     this.bytes = bytes;
@@ -108,6 +115,11 @@ export class Model {
     }
   }
 
+  /**
+   * @param {number} o File offset of the sequence.
+   * @param {number} index Its index in this model.
+   * @returns {object} The sequence: label, activity, weights, blend axes, fade times and so on.
+   */
   _readSeq(o, index) {
     const { dv, bytes } = this;
     const i32 = (k) => dv.getInt32(o + k, true);
@@ -127,12 +139,21 @@ export class Model {
     };
   }
 
+  /**
+   * @param {object} seq The sequence.
+   * @returns {Float32Array} How much it affects each bone.
+   */
   seqBoneWeights(seq) {
     const out = new Float32Array(this.bones.length);
     for (let i = 0; i < out.length; i++) out[i] = this.dv.getFloat32(seq.weightListIndex + i * 4, true);
     return out;
   }
 
+  /**
+   * Animation events, such as AE_BB_DAMAGE_SLICE on a throw.
+   * @param {object} seq The sequence.
+   * @returns {Array<object>} Its events, including the name and cycle of each.
+   */
   seqEvents(seq) {
     const out = [];
     const { dv, bytes } = this;
@@ -143,6 +164,10 @@ export class Model {
     return out;
   }
 
+  /**
+   * @param {number} idx Animation index in this model.
+   * @returns {object} fps, flags, frame count, movement list and where its data is.
+   */
   animDesc(idx) {
     const { dv } = this;
     const o = this.animIndex + idx * ANIM_SIZE;
@@ -154,11 +179,22 @@ export class Model {
     };
   }
 
+  /**
+   * @param {object} seq The sequence.
+   * @param {number} x Column in its blend grid.
+   * @param {number} y Row in its blend grid.
+   * @returns {number} The animation index.
+   */
   seqAnimIndex(seq, x, y) {
     return this.dv.getInt16(seq.animIndexIndex + (y * seq.groupSize[0] + x) * 2, true);
   }
 
-  // Root-motion style movement data of an animation at a cycle: returns local delta from cycle 0.
+  /**
+   * Root-motion style movement data of an animation at a cycle: returns local delta from cycle 0.
+   * @param {object} desc From animDesc.
+   * @param {number} cycle Point in the animation, 0 to 1.
+   * @returns {number[]} The delta [x, y, z].
+   */
   animMovement(desc, cycle) {
     const { dv } = this;
     if (!desc.numMovements) return [0, 0, 0];
@@ -185,7 +221,12 @@ export class Model {
     return [0, 0, 0];
   }
 
-  // Locates the mstudio_rle_anim_t list for a frame (handles sections).
+  /**
+   * Locates the mstudio_rle_anim_t list for a frame (handles sections).
+   * @param {object} desc From animDesc.
+   * @param {number} frame Frame number.
+   * @returns {number} File offset, or -1 if not in this file.
+   */
   _animPtr(desc, frame) {
     if (desc.animblock !== 0) return -1; // external .ani blocks are not used by the shipped models
     if (desc.sectionFrames > 0) {
@@ -198,6 +239,9 @@ export class Model {
     return desc.off + desc.animindex;
   }
 
+  /**
+   * Decodes one channel of Valve's run-length animation data.
+   */
   _extract(p, k, scale) {
     const { dv } = this;
     if (scale === 0) return 0;
@@ -213,8 +257,17 @@ export class Model {
     }
   }
 
-  // Samples one anim into pos/quat arrays, keyed by this model's bones. Bones absent keep base pose
-  // (or identity for delta anims).
+  /**
+   * Samples one anim into pos/quat arrays, keyed by this model's bones. Bones absent keep base pose
+   * (or identity for delta anims).
+   * @param {object} desc From animDesc.
+   * @param {number} cycle Point in the animation, 0 to 1.
+   * @param {Array} outPos Filled with positions, for bones the animation has.
+   * @param {Array} outQuat Filled with rotations, likewise.
+   * @param {number[]} [remap] This model's bone index to the destination's, or -1 to skip.
+   * @param {number} [numDest] Number of destination bones.
+   * @returns {Uint8Array} 1 for each destination bone written.
+   */
   sampleAnim(desc, cycle, outPos, outQuat, remap = null, numDest = this.bones.length) {
     const { dv, bones } = this;
     const ff = desc.numFrames > 1 ? cycle * (desc.numFrames - 1) : 0;
@@ -292,10 +345,46 @@ export class Model {
     }
     return touched;
   }
+
+  /**
+   * @param {number[][]} pos Each bone's position against its parent.
+   * @param {number[][]} quat Each bone's rotation against its parent.
+   * @returns {{local: number[][], world: number[][]}} The matrices against the parent and in model space.
+   */
+  _poseFrom(pos, quat) {
+    const local = this.bones.map((_, i) => quatMatrix(quat[i], pos[i])), world = [];
+    this.bones.forEach((b, i) => { world[i] = b.parent >= 0 ? matMul(world[b.parent], local[i]) : local[i]; });
+    return { local, world };
+  }
+
+  /**
+   * The reference pose: each bone's matrix against its parent and in model space
+   * @returns {{local: number[][], world: number[][]}} The pose.
+   */
+  refPose() { return (this._refPose ??= this._poseFrom(this.bones.map((b) => b.pos), this.bones.map((b) => b.quat))); }
+
+  /**
+   * The same for the start of the model's first sequence. A sword's reference pose can be nothing like how it's held:
+   * cts.mdl lies 90 degrees off its grip until its idle plays.
+   * @returns {{local: number[][], world: number[][]}} The pose; the reference pose if the model has no sequences.
+   */
+  idlePose() {
+    if (this._idlePose) return this._idlePose;
+    if (!this.seqs.length) return this.refPose();
+    const pos = this.bones.map((b) => b.pos), quat = this.bones.map((b) => b.quat);
+    this.sampleAnim(this.animDesc(this.seqAnimIndex(this.seqs[0], 0, 0)), 0, pos, quat);
+    return (this._idlePose = this._poseFrom(pos, quat));
+  }
 }
 
-// An assembled "virtual model": a root model + its include models.
+/**
+ * An assembled "virtual model": a root model + its include models.
+ */
 export class Character {
+  /**
+   * @param {Model} root The model the character is drawn with.
+   * @param {Model[]} [includes] Models whose sequences it can play, by bone name.
+   */
   constructor(root, includes = []) {
     this.root = root;
     this.includes = includes;
@@ -329,7 +418,11 @@ export class Character {
     this._dur = new Map();
   }
 
-  // Deterministic selection (highest weight, first on ties) so server and client agree.
+  /**
+   * Deterministic selection (highest weight, first on ties) so server and client agree.
+   * @param {string} act Activity, such as 'ACT_BB_B_IDLE'.
+   * @returns {object|null} The sequence.
+   */
   seqForActivity(act) {
     const l = this.byActivity.get(String(act).toUpperCase());
     if (!l || !l.length) return null;
@@ -338,12 +431,20 @@ export class Character {
     return best;
   }
 
+  /**
+   * @param {object} seq The sequence.
+   * @returns {object} Its first animation's description.
+   */
   seqDesc(seq) {
     const m = seq.model;
     return m.animDesc(m.seqAnimIndex(seq, 0, 0) + 0);
   }
 
-  // Sequence duration in seconds at the base blend.
+  /**
+   * Sequence duration in seconds at the base blend.
+   * @param {object} seq The sequence.
+   * @returns {number} Seconds; 0 for a single frame.
+   */
   seqDuration(seq) {
     let d = this._dur.get(seq);
     if (d !== undefined) return d;
@@ -353,14 +454,24 @@ export class Character {
     return d;
   }
 
-  // An animindex is relative to the current model's anim table. (mstudioanimdesc is at animIndex + 200*... )
+  /**
+   * An animindex is relative to the current model's anim table. (mstudioanimdesc is at animIndex + 200*... )
+   * @param {object} seq The sequence.
+   * @returns {object} Its first animation's description.
+   */
   _seqDescResolved(seq) {
     const m = seq.model;
     return m.animDesc(m.seqAnimIndex(seq, 0, 0));
   }
 
-  // Root motion delta (local space, units) of a sequence from cycle 0 to cycle.
-  // px picks the point along a sequence's first blend axis; without it the first animation is used.
+  /**
+   * Root motion delta (local space, units) of a sequence from cycle 0 to cycle.
+   * px picks the point along a sequence's first blend axis; without it the first animation is used.
+   * @param {object} seq The sequence.
+   * @param {number} cycle Point in it, 0 to 1.
+   * @param {number} [px] Blend position, 0 to 1.
+   * @returns {number[]} The delta [x, y, z].
+   */
   seqMovement(seq, cycle, px = null) {
     const m = seq.model;
     if (px === null || seq.groupSize[0] < 2) return m.animMovement(this._seqDescResolved(seq), cycle);
@@ -369,8 +480,15 @@ export class Character {
     return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
   }
 
-  // Normalized blend position of a sequence for move_x/move_y, honouring each axis' pose parameter
-  // and range. Sequences without those parameters stay at their center.
+  /**
+   * Normalized blend position of a sequence for move_x/move_y, honouring each axis' pose parameter
+   * and range. Sequences without those parameters stay at their center.
+   * @param {object} seq The sequence.
+   * @param {number} moveX The move_x pose parameter.
+   * @param {number} moveY The move_y pose parameter.
+   * @param {number} [wallrun] The wallrun pose parameter.
+   * @returns {number[]} [px, py], each 0 to 1.
+   */
   blendFor(seq, moveX, moveY, wallrun = 0) {
     const axis = (i) => {
       const idx = seq.paramIndex[i];
@@ -383,7 +501,15 @@ export class Character {
     return [axis(0), axis(1)];
   }
 
-  // Blends a sequence's anims given a pose-parameter getter value in [0,1] per axis.
+  /**
+   * Blends a sequence's anims given a pose-parameter getter value in [0,1] per axis.
+   * @param {object} seq The sequence.
+   * @param {number} cycle Point in it, 0 to 1.
+   * @param {number} px Blend position on the first axis.
+   * @param {number} py Blend position on the second.
+   * @param {Array} outPos Filled with each bone's position.
+   * @param {Array} outQuat Filled with each bone's rotation.
+   */
   _sampleSeq(seq, cycle, px, py, outPos, outQuat) {
     const m = seq.model;
     const remap = this.remaps.get(m);
@@ -415,8 +541,12 @@ export class Character {
     }
   }
 
-  // Sequences a sequence always plays on top of itself (mstudioautolayer_t). The shipped run cycles
-  // use these for their upper body; each has no start/end range, so it applies at full weight.
+  /**
+   * Sequences a sequence always plays on top of itself (mstudioautolayer_t). The shipped run cycles
+   * use these for their upper body; each has no start/end range, so it applies at full weight.
+   * @param {object} seq The sequence.
+   * @returns {object[]} The layered sequences.
+   */
   autoLayers(seq) {
     if (seq._auto) return seq._auto;
     const m = seq.model, out = [];
@@ -428,8 +558,12 @@ export class Character {
     return out;
   }
 
-  // layers: [{seq, cycle, weight, px, py}] applied in order. First is the base with weight 1.
-  // Returns per-bone local {pos, quat}.
+  /**
+   * layers: [{seq, cycle, weight, px, py}] applied in order. First is the base with weight 1.
+   * Returns per-bone local {pos, quat}.
+   * @param {Array<{seq: object, cycle: number, weight: number, px: number, py: number}>} input The layers.
+   * @returns {{P: number[][], Q: number[][]}} Each bone's position and rotation against its parent.
+   */
   evalLayers(input) {
     const n = this.bones.length;
     const P = new Array(n), Q = new Array(n);
@@ -463,6 +597,10 @@ export class Character {
     return { P, Q };
   }
 
+  /**
+   * @param {object} seq The sequence.
+   * @returns {Float32Array} Its bone weights, on the root model's bones.
+   */
   _weights(seq) {
     if (!seq._w) {
       const m = seq.model;
@@ -475,7 +613,13 @@ export class Character {
     return seq._w;
   }
 
-  // Local pose -> model-to-world bone matrices (12-float rows). aim leans the spine toward a pitch, in degrees.
+  /**
+   * Local pose -> model-to-world bone matrices (12-float rows). aim leans the spine toward a pitch, in degrees.
+   * @param {{P: number[][], Q: number[][]}} pose From evalLayers.
+   * @param {number[]} world The entity's matrix.
+   * @param {{pitch: number, yaw: number}} [aim] View to lean toward.
+   * @returns {number[][]} Each bone's world matrix.
+   */
   boneMatrices(pose, world, aim = null) {
     const out = new Array(this.bones.length);
     this._spine ??= ['valvebiped.bip01_spine', 'valvebiped.bip01_spine1', 'valvebiped.bip01_spine2'].map((n) => this.root.boneByName.get(n));
@@ -498,6 +642,11 @@ export class Character {
     return out;
   }
 
+  /**
+   * @param {string} name Attachment name, any case.
+   * @param {number[][]} bones From boneMatrices.
+   * @returns {number[]|null} Its world matrix.
+   */
   attachmentWorld(name, bones) {
     const a = this.root.attachments.find((x) => x.name.toLowerCase() === name.toLowerCase());
     if (!a) return null;
@@ -506,6 +655,11 @@ export class Character {
 }
 
 const SPINE_AIM = [0.5, 0.3, 0.2];
+/**
+ * @param {number[]} v Axis.
+ * @param {number} degrees Angle.
+ * @returns {number[]} 3x4 rotation.
+ */
 function axisAngleMatrix(v, degrees) {
   const l = Math.hypot(v[0], v[1], v[2]) || 1, x = v[0] / l, y = v[1] / l, z = v[2] / l;
   const r = degrees * Math.PI / 180, s = Math.sin(r), c = Math.cos(r), t = 1 - c;
@@ -522,8 +676,17 @@ function quatMul(p, q) {
 }
 
 // ------------------------------------------------------------------ render mesh
-// Builds a flat skinned mesh for LOD0. Returns {positions, normals, uvs, boneIdx, boneW, meshes:[{material, start, count}]}.
-// body: names of the body parts set to their second sub-model; everything else draws sub-model 0, which is often empty
+/**
+ * Builds a flat skinned mesh for LOD0. Returns {positions, normals, uvs, boneIdx, boneW, meshes:[{material, start, count}]}.
+ * body: names of the body parts set to their second sub-model; everything else draws sub-model 0, which is often empty
+ * Combines a model's .vvd and .vtx into draw-ready arrays, at the top level of detail.
+ * @param {Model} model The model.
+ * @param {Uint8Array} vvdBuf .vvd contents.
+ * @param {Uint8Array} vtxBuf .dx90.vtx contents.
+ * @param {number} [skinFamily] Which skin's textures to use.
+ * @param {Set<string>} [body] Body groups to turn on.
+ * @returns {object} positions, normals, uvs, boneIdx (3 a vertex), boneW, tangents, indices, and meshes by material.
+ */
 export function buildMesh(model, vvdBuf, vtxBuf, skinFamily = 0, body = null) {
   const vvd = new DataView(vvdBuf.buffer, vvdBuf.byteOffset, vvdBuf.byteLength);
   const vtx = new DataView(vtxBuf.buffer, vtxBuf.byteOffset, vtxBuf.byteLength);

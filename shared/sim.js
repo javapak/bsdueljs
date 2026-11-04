@@ -7,12 +7,38 @@ import { actionId, STANCE_KEYS } from './gamedata.js';
 import { angleVectors, add, sub, scale, dot, cross, len, norm, entityMatrix, angleNorm, approachAngle, matPoint } from './mathx.js';
 import { MASK_PLAYERSOLID } from './bsp.js';
 
+/**
+ * What a fighter is doing right now, in Player.act. Built by World.startAction, or World.startAttack for attacks.
+ * @typedef {object} Action
+ * @property {number} id The game's action id: 2 Guard, 3 Feint, 39 attacks and anything unnamed. See ACTION_IDS.
+ * @property {string} name Script name, such as 'Roll' or 'Interrupt'.
+ * @property {object} def The merged action script.
+ * @property {string} kind The script's factoryclass in lower case: 'block', 'grab', 'wallrun' and so on.
+ * @property {number} t Seconds since the action, or since a swing's release.
+ * @property {number} lock Seconds left until the fighter can act again.
+ * @property {number} lockDur What lock started at.
+ * @property {number} dur Length of the animation in seconds.
+ * @property {number} dir 0 forward, 1 right, 2 back, 3 left.
+ * @property {boolean} [attack] An attack.
+ * @property {('charge'|'swing')} [phase] Where an attack is.
+ * @property {number} [tier] A swing's tier: 0, 1 or 2 for tiers 1 to 3.
+ * @property {number} [stanceType] 0 balanced, 1 fast, 2 heavy, 3 air.
+ * @property {number[]} [tracer] Cycles the script samples the blade at.
+ * @property {Array} [bladeRing] The last 20 blade samples, newest last.
+ */
 export const TICK = 1 / 64;
 // [R 18037b1eb] the player reset sets the entity gravity field to 3, multiplying sv_gravity
 const PLAYER_GRAVITY_SCALE = 3;
 // [R 18037b470] these presses are remembered; a new one replaces the old. The time is the client's bb_ibt default.
 const BUFFERED_BUTTONS = 0x428807, INPUT_BUFFER_TIME = 0.33;
-// [R 180454b60, 180450a80] Source's Gain() through a cosine; sharpness 0 makes Bias() pow(x, 0), so this is 0.5
+/**
+ * [R 180454b60, 180450a80] Source's Gain() through a cosine; sharpness 0 makes Bias() pow(x, 0), so this is 0.5
+ * The curve gravity follows during a jump.
+ * @param {number} n Progress through the blend, 0 to 1.
+ * @param {number} bias Where the peak sits in n.
+ * @param {number} sharpness bb_jumpgravity_scale_sharpness.
+ * @returns {number} The blend, 0 to 1.
+ */
 function jumpGravityEase(n, bias, sharpness) {
   const x = n >= bias ? (n - bias) * 0.5 / (1 - bias) + 0.5 : n * 0.5 / bias;
   const b = (v) => Math.pow(v, Math.log(1 - sharpness) * -1.4427);
@@ -26,16 +52,43 @@ const SURF_SKY_FLAG = 4, SURF_NODRAW_FLAG = 0x80, CONTENTS_WALLRUN = 0x80000;
 // [I] forward/side input the charge dampen scales. cl_forwardspeed defaults to 450, but that hits the speed cap almost
 // at once, leaving charge progress no effect and running faster than players report, so this uses sv_maxspeed's 175.
 const CHARGE_INPUT = 175;
+/**
+ * @param {*} v Script value.
+ * @param {number} [d] Returned if it isn't a number.
+ * @returns {number} The number.
+ */
 const num = (v, d = 0) => { const f = parseFloat(v); return Number.isNaN(f) ? d : f; };
+/**
+ * @param {*} v Script value.
+ * @returns {boolean} False if missing, '0' or 'false'; anything else is true.
+ */
 const flag = (v) => v !== undefined && v !== '0' && String(v).toLowerCase() !== 'false';
 
+/**
+ * The game's console variables at their defaults, from shared/cvars_all.json. Nothing here changes them while running.
+ */
 export class Cvars {
+  /**
+   * @param {Object<string, {default: string}>} table Cvar name to its entry.
+   */
   constructor(table) { this.t = table; this.c = new Map(); }
+  /**
+   * @param {string} name Cvar name.
+   * @returns {number} Its default as a number, 0 if it doesn't exist.
+   */
   f(name) { let v = this.c.get(name); if (v === undefined) { v = parseFloat(this.t[name]?.default ?? '0'); this.c.set(name, v); } return v; }
 }
 
 // ---------------------------------------------------------------------- player
+/**
+ * One fighter, human or bot. Holds input and state; the rules that act on it are all in World.
+ */
 export class Player {
+  /**
+   * @param {number} id Unique id.
+   * @param {string} name Display name.
+   * @param {string} character Character key.
+   */
   constructor(id, name, character) {
     Object.assign(this, { id, name, character, isBot: false, connected: true });
     this.score = 0;
@@ -44,6 +97,11 @@ export class Player {
     this.reset([0, 0, 0], 0);
   }
 
+  /**
+   * Back to full health with every action, timer and cooldown cleared. Score, stance and loadout stay.
+   * @param {number[]} origin Position.
+   * @param {number} yaw Facing in degrees.
+   */
   reset(origin, yaw) {
     Object.assign(this, {
       origin: [...origin], vel: [0, 0, 0], yaw, viewYaw: yaw, pitch: 0, onGround: false,
@@ -57,17 +115,46 @@ export class Player {
     });
   }
 
+  /**
+   * @returns {number} Buttons that went down this tick.
+   */
   get pressed() { return this.buttons & ~this.prevButtons; }
-  // [R 180379c10] held, or pressed within the input buffer
+  /**
+   * [R 180379c10] held, or pressed within the input buffer
+   * @param {number} bit An IN button.
+   * @returns {boolean} Whether it counts as pressed.
+   */
   wants(bit) { return !!(this.buttons & bit) || (this.bufferT > 0 && !!(this.bufferMask & bit)); }
-  // [R 180379b80] the same, and using it spends the buffered press
+  /**
+   * [R 180379b80] the same, and using it spends the buffered press
+   * @param {number} bit An IN button.
+   * @returns {boolean} Whether it counted as pressed.
+   */
   use(bit) { const w = this.wants(bit); if (w) this.bufferMask &= ~bit; return w; }
+  /**
+   * @returns {boolean} Charging or swinging.
+   */
   isAttacking() { return !!this.act?.attack; }
+  /**
+   * @returns {boolean} Released and swinging.
+   */
   isSwinging() { return !!(this.act?.attack && this.act.phase === 'swing'); }
 }
 
 // ---------------------------------------------------------------------- world
+/**
+ * The authoritative simulation, at 64 ticks a second: every fighter on a map, their thrown weapons, and one Duel per arena.
+ * Runs the same on the server and in the tests. Everything that happens goes out through `events`.
+ */
 export class World {
+  /**
+   * @param {object} o World parts.
+   * @param {BSP} o.bsp The map.
+   * @param {GameData} o.data The game's scripts.
+   * @param {Cvars} o.cvars The cvar table.
+   * @param {CharacterStore} o.assets Character models, already preloaded.
+   * @param {string} [o.map] Map name.
+   */
   constructor({ bsp, data, cvars, assets, map = '' }) {
     Object.assign(this, { bsp, data, cv: cvars, assets, map });
     this.time = 0;
@@ -78,15 +165,37 @@ export class World {
     this.duels = Duel.forMap(this);
   }
 
+  /**
+   * @returns {Duel} The first arena.
+   */
   get duel() { return this.duels[0]; }
 
+  /**
+   * Queues an event for the server to send out, stamped with the time.
+   * @param {object} e Event, with a `type`.
+   */
   emit(e) { this.events.push({ ...e, time: this.time }); }
+  /**
+   * @param {number} id Player id.
+   * @returns {Player|undefined} The fighter, if in the world.
+   */
   player(id) { return this.players.find((p) => p.id === id); }
 
-  // Into an arena's queue; a fighter is only in the world while that arena has them playing
+  /**
+   * Into an arena's queue; a fighter is only in the world while that arena has them playing
+   * @param {Player} p The fighter.
+   * @param {number} [arena] Arena index.
+   */
   addPlayer(p, arena = 0) { this.duels[arena].enqueue(p); }
+  /**
+   * Takes someone out of every queue and the world.
+   * @param {number} id Player id.
+   */
   removePlayer(id) { for (const d of this.duels) d.drop(id); this.players = this.players.filter((p) => p.id !== id); }
 
+  /**
+   * One tick: rounds, then bots, then each fighter, thrown weapons, and last the push between overlapping fighters.
+   */
   step() {
     this.time += TICK; this.tickCount++;
     for (const d of this.duels) d.update();
@@ -98,6 +207,11 @@ export class World {
   }
 
   // -------------------------------------------------------------------- per player
+  /**
+   * One fighter's tick. Cooldowns run, then the input buffer, and hitstop stops everything else here. Then stance, the
+   * current action and new input, turning, movement, animation clocks, and last the blade's tracer.
+   * @param {Player} p The fighter.
+   */
   tickPlayer(p) {
     const dt = TICK;
     // [R 18036f7d0] runs before movement: the ground clears the gravity timer and only there does the cooldown count
@@ -133,11 +247,18 @@ export class World {
     else if (p.frozen && p.lastHitTime > 0) p.lastHitTime += TICK;
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {number} 3 while in the air stance, otherwise the chosen stance.
+   */
   stanceNow(p) { return p.airStance ? 3 : p.stance; }
 
-  // [R 18037b6b0] Every tick. Past bb_air_stance_height_min off the ground the stance becomes air, and an attack still
-  // charging becomes that stance's version, keeping its charge. Landing undoes it, so a release lower than that
-  // height stays a ground attack.
+  /**
+   * [R 18037b6b0] Every tick. Past bb_air_stance_height_min off the ground the stance becomes air, and an attack still
+   * charging becomes that stance's version, keeping its charge. Landing undoes it, so a release lower than that
+   * height stays a ground attack.
+   * @param {Player} p The fighter.
+   */
   updateStance(p) {
     const a = p.act, charging = a?.attack && a.phase === 'charge', swinging = a?.attack && a.phase === 'swing';
     if (!p.onGround) {
@@ -160,16 +281,23 @@ export class World {
     if (p.onGround || key >= 0 || !p.airStance) { this.setStance(p, want); p.queuedStance = -1; }
   }
 
-  // [R 1803723a0, 1803444f0] replaces the charging attack with the same direction and string slot in a stance;
-  // elapsed charge time carries over
+  /**
+   * [R 1803723a0, 1803444f0] replaces the charging attack with the same direction and string slot in a stance;
+   * elapsed charge time carries over
+   * @param {Player} p The fighter.
+   * @param {number} stance Stance to charge in.
+   */
   swapCharge(p, stance) {
     const a = p.act, def = this.data.attackFor(p.character, stance, a.dir, a.comboIdx);
     if (!def) return;
     Object.assign(a, { name: def.name, def, stanceType: stance, anim: def.charge_animation, seq: this.seqInfo(p, def.charge_animation).seq });
   }
 
-  // [R 180379df0] input priority order: current action update, shuffle, grab, roll, wall run, block, throw, attack.
-  // Everything reads held or buffered, so holding a button repeats it once it can run again.
+  /**
+   * [R 180379df0] input priority order: current action update, shuffle, grab, roll, wall run, block, throw, attack.
+   * Everything reads held or buffered, so holding a button repeats it once it can run again.
+   * @param {Player} p The fighter.
+   */
   dispatchInput(p) {
     if (p.kneeling) { this.dispatchKneeling(p); return; }
     if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); this.startEvade(p, 'Shuffle'); return; }
@@ -190,6 +318,10 @@ export class World {
     this.dispatchAttack(p);
   }
 
+  /**
+   * Last in line for input: a throw, then an attack, if the current action allows anything new.
+   * @param {Player} p The fighter.
+   */
   dispatchAttack(p) {
     if (this.tryThrow(p)) return;
     // [R 18037a1bd] the current action decides whether anything new can start
@@ -197,13 +329,19 @@ export class World {
     if (!p.isAttacking() && p.use(IN.ATTACK)) this.startAttack(p);
   }
 
-  // [R 180373580] an attack's start and end hold off the block, for swords whose tech is block
+  /**
+   * [R 180373580] an attack's start and end hold off the block, for swords whose tech is block
+   * @param {Player} p The fighter.
+   */
   postAttackCooldown(p) {
     if (String(this.sword(p).blocktech || 'block').toLowerCase() === 'block') p.blockCooldown = this.cv.f('bb_block_post_attack_cooldown');
   }
 
-  // [R 180372010] Out of a swing the feint is released at once: the same animation and tier carry on, and the cut lock
-  // loses the time already spent, plus 10 frames. From nothing it charges. Either way the string goes back to its start.
+  /**
+   * [R 180372010] Out of a swing the feint is released at once: the same animation and tier carry on, and the cut lock
+   * loses the time already spent, plus 10 frames. From nothing it charges. Either way the string goes back to its start.
+   * @param {Player} p The fighter.
+   */
   startFeint(p) {
     const a = p.act;
     if (a?.phase === 'swing') {
@@ -216,11 +354,19 @@ export class World {
     p.comboIdx = 0;
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether this sword's block button feints.
+   */
   isFeintSword(p) { return String(this.sword(p).blocktech).toLowerCase() === 'feint'; }
 
-  // [R 180374e29, 180374f14] Unlike a block a feint needs no ground and ignores the attack button. It starts from nothing, or
-  // over a swing whose tracer isn't testing and isn't finished: before its second sample, or in the extension after its
-  // script. [R 1803742bc] the check for an attack is false while it charges, so a press during one waits for the release.
+  /**
+   * [R 180374e29, 180374f14] Unlike a block a feint needs no ground and ignores the attack button. It starts from nothing, or
+   * over a swing whose tracer isn't testing and isn't finished: before its second sample, or in the extension after its
+   * script. [R 1803742bc] the check for an attack is false while it charges, so a press during one waits for the release.
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether a feint can start now.
+   */
   canFeint(p) {
     const a = p.act;
     if (p.blockCooldown > 0 || a?.feint) return false;
@@ -228,8 +374,11 @@ export class World {
     return !!a.attack && a.phase === 'swing' && !a.trDone && !(a.trCount > 0 && a.bladeRing?.length > 1);
   }
 
-  // [R 180379df0, 18037b510] downed: jump gets up, block is the recovery intercept (also late in a roll),
-  // attack is the recovery attack and a held move key rolls that way
+  /**
+   * [R 180379df0, 18037b510] downed: jump gets up, block is the recovery intercept (also late in a roll),
+   * attack is the recovery attack and a held move key rolls that way
+   * @param {Player} p The fighter.
+   */
   dispatchKneeling(p) {
     const a = p.act, b = p.buttons;
     if (!a || (a.kind === 'kneelroll' && a.lock <= 0.2)) {
@@ -242,9 +391,16 @@ export class World {
   }
 
   // -------------------------------------------------------------------- wall moves
-  // [R 180378a3b] A hull hit that counts as a wall. Not sky. Invisible brushes count only if they're toolsnodraw, or
-  // carry contents 0x80000, which mappers put on clip brushes around an arena to make them runnable; a brush with
-  // that flag also wins when it's nearer than what the first trace hit.
+  /**
+   * [R 180378a3b] A hull hit that counts as a wall. Not sky. Invisible brushes count only if they're toolsnodraw, or
+   * carry contents 0x80000, which mappers put on clip brushes around an arena to make them runnable; a brush with
+   * that flag also wins when it's nearer than what the first trace hit.
+   * @param {number[]} from Start.
+   * @param {number[]} to End.
+   * @param {number[]} mins Hull minimum.
+   * @param {number[]} maxs Hull maximum.
+   * @returns {object|null} The trace, or null if there's no wall to run on.
+   */
   wallTrace(from, to, mins, maxs) {
     const t = this.bsp.traceBox(from, to, mins, maxs, MASK_PLAYERSOLID);
     if (t.startsolid || t.fraction >= 1) return null;
@@ -258,9 +414,13 @@ export class World {
     return runnable && flagged.fraction < t.fraction ? flagged : t;
   }
 
-  // [R 180378780] Roll held in any stance, or during a roll's first 45% or from 83% on, with a wall 16 units ahead of
-  // where the fighter looks. Five runs before touching the ground again. True if the run started, or if the button
-  // alone consumed this tick's input. A roll keeps its input ([I] the game's roll cancel would otherwise never fire).
+  /**
+   * [R 180378780] Roll held in any stance, or during a roll's first 45% or from 83% on, with a wall 16 units ahead of
+   * where the fighter looks. Five runs before touching the ground again. True if the run started, or if the button
+   * alone consumed this tick's input. A roll keeps its input ([I] the game's roll cancel would otherwise never fire).
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether this tick's input is used up.
+   */
   tryWallRun(p) {
     const a = p.act, rolling = a?.name === 'Roll';
     if (a?.kind === 'wallrun' || a?.kind === 'climb' || p.kneeling || !p.alive) return false;
@@ -293,15 +453,22 @@ export class World {
     return true;
   }
 
-  // Ends a wall move on the next stage, holding off new wall runs and rolls
+  /**
+   * Ends a wall move on the next stage, holding off new wall runs and rolls
+   * @param {Player} p The fighter.
+   * @param {string} name Next action.
+   */
   wallNext(p, name) {
     p.act = null;
     this.startAction(p, name, { force: true });
     p.moveCooldown = this.cv.f('bb_walljump_delay');
   }
 
-  // [R 18034e530] Follows the wall until it's gone or the animation runs out, then transitions. A wall overhead ends it
-  // while running straight up; jump springs off.
+  /**
+   * [R 18034e530] Follows the wall until it's gone or the animation runs out, then transitions. A wall overhead ends it
+   * while running straight up; jump springs off.
+   * @param {Player} p The fighter.
+   */
   updateWallRun(p) {
     const a = p.act, o = p.origin, d = p.wallDir;
     if (a.lock <= 0) { this.wallNext(p, 'WallTransTo'); return; }
@@ -316,13 +483,21 @@ export class World {
     this.setWall(p, t.normal);
   }
 
+  /**
+   * Faces the fighter into the wall.
+   * @param {Player} p The fighter.
+   * @param {number[]} n The wall's normal.
+   */
   setWall(p, n) {
     p.wallDir = [-n[0], -n[1], -n[2]];
     p.yaw = Math.atan2(n[1], n[0]) * 180 / Math.PI + 180;
   }
 
-  // [R 18034fbc0] Stays against the wall and drifts along it the way the run was angled. Jump springs off; losing the
-  // wall lets go. Landing also ends it [I].
+  /**
+   * [R 18034fbc0] Stays against the wall and drifts along it the way the run was angled. Jump springs off; losing the
+   * wall lets go. Landing also ends it [I].
+   * @param {Player} p The fighter.
+   */
   updateWallSlide(p) {
     const a = p.act, o = p.origin, d = p.wallDir, v = p.vel;
     if (p.pressed & IN.JUMP) { this.wallSlideJump(p); return; }
@@ -337,7 +512,11 @@ export class World {
     void a;
   }
 
-  // The player's move input in world space, without what pushes into the wall
+  /**
+   * The player's move input in world space, without what pushes into the wall
+   * @param {Player} p The fighter.
+   * @returns {number[]} The input as a velocity.
+   */
   wallInput(p) {
     const { forward: f, right: r } = angleVectors([p.pitch, p.viewYaw, 0]);
     let fm = 0, sm = 0;
@@ -353,8 +532,11 @@ export class World {
     return into > 0 ? [w[0] - d[0] * into, w[1] - d[1] * into, w[2] - d[2] * into] : w;
   }
 
-  // [R 18034f770, 180350dc0] The later in the move, the harder the jump; running straight up keeps its height.
-  // Speed carried in is capped and upward only, then it pushes off the wall and up, and the move input adds on.
+  /**
+   * [R 18034f770, 180350dc0] The later in the move, the harder the jump; running straight up keeps its height.
+   * Speed carried in is capped and upward only, then it pushes off the wall and up, and the move input adds on.
+   * @param {Player} p The fighter.
+   */
   wallJump(p) {
     const a = p.act, cv = this.cv, x = a.lockDur > 0 ? a.lock / a.lockDur : 0;
     const late = Math.max(0, Math.min(1, 1 - (2 * x - 1)));
@@ -371,7 +553,10 @@ export class World {
     this.emit({ type: 'jump', id: p.id });
   }
 
-  // [R 180350a70] off a slide: a fixed push, with more of the move input
+  /**
+   * [R 180350a70] off a slide: a fixed push, with more of the move input
+   * @param {Player} p The fighter.
+   */
   wallSlideJump(p) {
     const cv = this.cv, d = p.wallDir, xy = cv.f('bb_wallslide_impulse_xy'), z = cv.f('bb_wallslide_impulse_z');
     this.wallNext(p, 'WallFlip');
@@ -382,15 +567,22 @@ export class World {
   }
 
   // -------------------------------------------------------------------- throwables
-  // [R 18037a22e] E, off its own delay and with nothing locking the fighter. dispatchInput runs it before attacks.
+  /**
+   * [R 18037a22e] E, off its own delay and with nothing locking the fighter. dispatchInput runs it before attacks.
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether a throw started.
+   */
   tryThrow(p) {
     if (p.throwCooldown > 0 || p.kneeling || (p.act && p.act.lock > 0) || !p.wants(IN.THROW)) return false;
     p.use(IN.THROW);
     return !!this.startAction(p, 'ThrowWeapon', { force: true, extra: { thrown: false } });
   }
 
-  // [R 18034d6c0, 18034d8f0, 18034dd10] the star leaves bb_throwable_spawn_delay into the action. Letting go of the
-  // button past the cancelable time and before that ends it.
+  /**
+   * [R 18034d6c0, 18034d8f0, 18034dd10] the star leaves bb_throwable_spawn_delay into the action. Letting go of the
+   * button past the cancelable time and before that ends it.
+   * @param {Player} p The fighter.
+   */
   updateThrowWeapon(p) {
     const a = p.act, cv = this.cv;
     if (a.thrown) return;
@@ -398,7 +590,11 @@ export class World {
     if (cv.f('bb_throwable_cancelable') && a.t >= cv.f('bb_throwable_cancelable_min_time') && !(p.buttons & IN.THROW)) { p.act = null; p.throwCooldown = cv.f('bb_throwable_delay'); }
   }
 
-  // [R 18034e020] The nearest thing to the crosshair among enemies in reach and in sight. The cone tightens the closer they are.
+  /**
+   * [R 18034e020] The nearest thing to the crosshair among enemies in reach and in sight. The cone tightens the closer they are.
+   * @param {Player} p The fighter.
+   * @returns {Player|null} Who the throw homes on. If several qualify, this is the last one checked.
+   */
   starTarget(p) {
     const cv = this.cv, eye = [p.origin[0], p.origin[1], p.origin[2] + 40];
     const { forward: f, right: r, up: u } = angleVectors([p.pitch, p.viewYaw, 0]);
@@ -418,8 +614,12 @@ export class World {
     return best;
   }
 
-  // [R 18034db18, 180383b64] Aimed along the view, pitched down a little; farther throws spread more, and leave at an
-  // angle they then curve back from.
+  /**
+   * [R 18034db18, 180383b64] Aimed along the view, pitched down a little; farther throws spread more, and leave at an
+   * angle they then curve back from.
+   * Releases the throwable from the left hand.
+   * @param {Player} p The fighter.
+   */
   launchStar(p) {
     const cv = this.cv, c = this.char(p);
     const eye = [p.origin[0], p.origin[1], p.origin[2] + 64];
@@ -442,8 +642,11 @@ export class World {
     this.emit({ type: 'star_throw', id: p.id, star: this.nextStar - 1, kind: this.stars.at(-1).type, pos: hand });
   }
 
-  // [R 180385660] Turns toward the aim point, leading a target by its velocity, until pointing there. Then a star with
-  // no target falls.
+  /**
+   * [R 180385660] Turns toward the aim point, leading a target by its velocity, until pointing there. Then a star with
+   * no target falls.
+   * Moves every thrown weapon one tick, and ends it on a fighter, on the world, or when its life runs out.
+   */
   updateStars() {
     const cv = this.cv, speed = cv.f('bb_throwable_speed');
     for (const s of this.stars) {
@@ -480,7 +683,13 @@ export class World {
     if (this.stars.some((s) => s.done)) this.stars = this.stars.filter((s) => !s.done);
   }
 
-  // The swept star against each fighter's hull, grown by the type's bounds_player
+  /**
+   * The swept star against each fighter's hull, grown by the type's bounds_player
+   * @param {object} s The thrown weapon.
+   * @param {number[]} end Where it ends this tick.
+   * @param {number} limit Fraction of the move before it hits the world.
+   * @returns {Player|null} The fighter it reaches.
+   */
   starHitsPlayer(s, end, limit) {
     const R = 8;
     for (const q of this.players) {
@@ -499,8 +708,12 @@ export class World {
     return null;
   }
 
-  // [R 180382303, 18038245a] Facing it, an idle fighter catches it on reflex and a blocking or parrying one over a wider
-  // arc. A fighter already swinging, rolling or shuffling takes no reaction. Otherwise it damages and interrupts.
+  /**
+   * [R 180382303, 18038245a] Facing it, an idle fighter catches it on reflex and a blocking or parrying one over a wider
+   * arc. A fighter already swinging, rolling or shuffling takes no reaction. Otherwise it damages and interrupts.
+   * @param {object} s The thrown weapon.
+   * @param {Player} v Who it reached.
+   */
   starHit(s, v) {
     const cv = this.cv, a = v.act;
     const { forward: f } = angleVectors([0, v.viewYaw, 0]);
@@ -524,50 +737,85 @@ export class World {
     if (reacts && cv.f('bb_throwable_interrupt_on_hit')) this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction });
   }
 
-  // [R 180376fc0, 180379df0] needs the ground, no active lock and the shared combat-move delay elapsed
+  /**
+   * [R 180376fc0, 180379df0] needs the ground, no active lock and the shared combat-move delay elapsed
+   * Whether a shuffle or roll can start.
+   * @param {Player} p The fighter.
+   * @returns {boolean} True if so.
+   */
   canEvade(p) {
     const a = p.act;
     return p.onGround && p.moveCooldown <= 0 && !(a && (a.kind === 'block' || a.lock > 0));
   }
 
-  // [R 18037a0c2] roll on an attack charged to tier 2 or better, on the ground. It answers only to its own cooldown, not
-  // the one rolls wait on, and starts that one too. Until bb_dash_delay runs out you're vulnerable: see dashDamage, starHit.
+  /**
+   * [R 18037a0c2] roll on an attack charged to tier 2 or better, on the ground. It answers only to its own cooldown, not
+   * the one rolls wait on, and starts that one too. Until bb_dash_delay runs out you're vulnerable: see dashDamage, starHit.
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether roll would dash.
+   */
   canChargeDash(p) {
     const a = p.act;
     return (p.onGround || !!this.cv.f('bb_roll_air')) && !!a?.attack && a.phase === 'charge' && a.chargeTier >= 1 && p.dashCooldown <= 0;
   }
 
-  // [R 18036d0a4 sword, 18033380d grab, 1803827c3 throwable] all of them hurt more during the dash's cooldown
+  /**
+   * [R 18036d0a4 sword, 18033380d grab, 1803827c3 throwable] all of them hurt more during the dash's cooldown
+   * @param {Player} v The victim.
+   * @param {number} damage Damage before the multiplier.
+   * @returns {number} Times bb_dash_damage_multiplier during the cooldown.
+   */
   dashDamage(v, damage) {
     return v.dashCooldown > 0 ? damage * this.cv.f('bb_dash_damage_multiplier') : damage;
   }
 
-  // [R 180378f10] the next shuffle or roll waits for the shorter of sequence and lock, plus 0.2s
+  /**
+   * [R 180378f10] the next shuffle or roll waits for the shorter of sequence and lock, plus 0.2s
+   * @param {Player} p The fighter.
+   * @param {string} name 'Shuffle', 'Roll' or 'AirDash'.
+   */
   startEvade(p, name) {
     const a = this.startAction(p, name, { dir: this.moveDir(p), force: true });
     if (a) p.moveCooldown = Math.min(a.dur, a.lockDur) + 0.2;
   }
 
-  // [R 1803750d0] a grab can also replace a block or an attack that is still charging
+  /**
+   * [R 1803750d0] a grab can also replace a block or an attack that is still charging
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether a grab can start.
+   */
   canGrab(p) {
     const a = p.act;
     return p.onGround && (!a || a.lock <= 0 || a.kind === 'block' || (a.attack && a.phase === 'charge'));
   }
 
+  /**
+   * What the block button does with this sword.
+   * @param {Player} p The fighter.
+   * @returns {string} 'Block', 'Parry' or 'Guard'.
+   */
   blockActionName(p) {
     // blockTech from the sword type [R 180374d80]: 0 Block, 1 Parry, 2 Guard. "block" is the default sword's tech.
     const tech = (this.sword(p).blocktech || 'block').toLowerCase();
     return tech === 'parry' ? 'Parry' : tech === 'guard' ? 'Guard' : 'Block';
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether the current action's lock is over.
+   */
   canCancel(p) {
     const a = p.act;
     if (a.locked === false) return true;
     return a.lock <= 0;
   }
 
-  // [R 18034c360, 180344d10] a held attack replaces a shuffle or roll once the sequence's remaining time, not the
-  // lock's, is within the cancel time
+  /**
+   * [R 18034c360, 180344d10] a held attack replaces a shuffle or roll once the sequence's remaining time, not the
+   * lock's, is within the cancel time
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether an attack can replace the evade now.
+   */
   attackCancelsEvade(p) {
     const a = p.act;
     if (!a || !(p.buttons & IN.ATTACK)) return false;
@@ -575,8 +823,13 @@ export class World {
     return !!cancel && a.dur - a.t <= this.cv.f(cancel);
   }
 
-  // [R 1803467c0] attack held late in a swing cancels it, on a swing to the opposite side or after a stance change,
-  // if the sword allows it. "Late" is the stance's bb_side_cancel_percent_* of the lock remaining.
+  /**
+   * [R 1803467c0] attack held late in a swing cancels it, on a swing to the opposite side or after a stance change,
+   * if the sword allows it. "Late" is the stance's bb_side_cancel_percent_* of the lock remaining.
+   * @param {Player} p The fighter.
+   * @param {Action} a The swing.
+   * @returns {boolean} Whether the swing ends here.
+   */
   swingCancels(p, a) {
     if (!p.wants(IN.ATTACK)) return false;
     const percent = this.cv.f(`bb_side_cancel_percent_${['balanced', 'fast', 'heavy', 'air'][a.stanceType]}`);
@@ -589,14 +842,23 @@ export class World {
     return flag(sword.canstancecancel) && a.stanceAtRelease !== this.stanceNow(p);
   }
 
-  // [R 18036e190, 1803462a0, 180343d80] the action decides: an attack allows a jump while charging or when it
-  // isn't air_move; anything else follows its script's "jump" key
+  /**
+   * [R 18036e190, 1803462a0, 180343d80] the action decides: an attack allows a jump while charging or when it
+   * isn't air_move; anything else follows its script's "jump" key
+   * @param {Action} [a] The current action.
+   * @returns {boolean} Whether it allows a jump.
+   */
   canJumpInAction(a) {
     if (!a) return true;
     return a.attack ? a.phase === 'charge' || !a.airMove : flag(a.def?.jump);
   }
 
-  // [R 180374910] direction: 0 forward, 1 right, 2 back, 3 left
+  /**
+   * [R 180374910] direction: 0 forward, 1 right, 2 back, 3 left
+   * Left or right wins over forward and back, so a diagonal counts as a side attack.
+   * @param {Player} p The fighter.
+   * @returns {number} The direction.
+   */
   moveDir(p) {
     const b = p.buttons, l = b & IN.LEFT, r = b & IN.RIGHT;
     if (!l && r) return 1;
@@ -605,13 +867,28 @@ export class World {
     return b & IN.BACK ? 2 : 0;
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @param {number} s 0 balanced, 1 fast, 2 heavy.
+   */
   setStance(p, s) {
     if (p.stance !== s) { p.stance = s; this.emit({ type: 'stance', id: p.id, stance: s }); }
   }
 
+  /**
+   * Limits how fast the fighter can turn for a while, as after being hit.
+   * @param {Player} p The fighter.
+   * @param {number} speed Degrees per second.
+   * @param {number} dur Seconds.
+   */
   setTurnRate(p, speed, dur) { p.turnRate = speed; p.turnRateTime = dur; }
 
   // -------------------------------------------------------------------- actions
+  /**
+   * @param {object} def Action script.
+   * @param {number} dir Direction.
+   * @returns {string} The activity for that direction, or the action's only one.
+   */
   actionAnim(def, dir) {
     const a = def.animation;
     if (a && typeof a === 'object') {
@@ -621,16 +898,40 @@ export class World {
     return a;
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {Character} The fighter's model and animations.
+   */
   char(p) { return this.assets.character(p.character); }
+  /**
+   * @param {Player} p The fighter.
+   * @returns {object} The fighter's sword type script.
+   */
   sword(p) { return this.data.swordFor(p.character, p.sword); }
 
+  /**
+   * @param {Player} p The fighter.
+   * @param {string} activity Activity name, such as 'ACT_BB_THROW'.
+   * @returns {{seq: object|null, dur: number}} The sequence and its length in seconds.
+   */
   seqInfo(p, activity) {
     const c = this.char(p);
     const seq = activity ? c.seqForActivity(activity) : null;
     return { seq, dur: seq ? c.seqDuration(seq) : 0 };
   }
 
-  // [R 180344950] CAction start: lock_duration from script; negative or missing uses the sequence length
+  /**
+   * [R 180344950] CAction start: lock_duration from script; negative or missing uses the sequence length
+   * @param {Player} p The fighter.
+   * @param {string} name Action script name.
+   * @param {object} [opts] Options.
+   * @param {boolean} [opts.force] Start even if the current action's lock isn't over.
+   * @param {number} [opts.dir] Direction.
+   * @param {string} [opts.anim] Play this instead of the script's animation.
+   * @param {number} [opts.lock] Use this lock instead of the script's.
+   * @param {object} [opts.extra] Extra fields for the action.
+   * @returns {Action|null} The action, or null if it couldn't start.
+   */
   startAction(p, name, opts = {}) {
     const def = this.data.action(name);
     if (!def) return null;
@@ -650,7 +951,11 @@ export class World {
     return p.act;
   }
 
-  // [R 180374910] picks the attack from stance/direction/combo index, then CAttackAction charges
+  /**
+   * [R 180374910] picks the attack from stance/direction/combo index, then CAttackAction charges
+   * @param {Player} p The fighter.
+   * @param {boolean} [feint] Charge it as a feint.
+   */
   startAttack(p, feint = false) {
     const stance = this.stanceNow(p);
     const dir = this.moveDir(p);
@@ -678,17 +983,26 @@ export class World {
     }
   }
 
-  // How far the attack being charged has come
+  /**
+   * How far the attack being charged has come
+   * Thresholds are the bb_charge_tier cvars times the sword's chargetime.
+   * @param {Player} p The fighter.
+   * @returns {number} 0, 1 or 2, for tiers 1 to 3.
+   */
   chargedTier(p) {
     const cv = this.cv, mult = num(this.sword(p).chargetime, 1), held = p.act.t;
     if (held >= cv.f('bb_charge_tier3_time') * mult) return 2;
     return held >= cv.f('bb_charge_tier2_time') * mult ? 1 : 0;
   }
 
-  // [R client 1802ba0d0] What the attack preview shows: the swing under way, what the charge would release, or with no
-  // action going, the first tier of what the stance, keys and string would start. Nothing during any other action or
-  // while kneeling.
-  // [I] the string restarting after bb_string_reset_time counts here too, as it will once the attack starts.
+  /**
+   * [R client 1802ba0d0] What the attack preview shows: the swing under way, what the charge would release, or with no
+   * action going, the first tier of what the stance, keys and string would start. Nothing during any other action or
+   * while kneeling.
+   * [I] the string restarting after bb_string_reset_time counts here too, as it will once the attack starts.
+   * @param {Player} p The fighter.
+   * @returns {{a: string, l: string}|null} The animation and its lower body.
+   */
   previewAttack(p) {
     if (p.kneeling) return null;
     const a = p.act;
@@ -700,7 +1014,12 @@ export class World {
     return t?.animation ? { a: t.animation, l: t.animation_lowerbody } : null;
   }
 
-  // [R 180346a70] release: tier from elapsed charge, animation/lock from the tierN block; lock <= seq + 0.2
+  /**
+   * [R 180346a70] release: tier from elapsed charge, animation/lock from the tierN block; lock <= seq + 0.2
+   * Also advances the string, so a swing moves you along it as it releases.
+   * @param {Player} p The fighter.
+   * @param {number} [forceTier] Use this tier rather than the charge's.
+   */
   releaseAttack(p, forceTier) {
     const a = p.act, cv = this.cv;
     const mult = num(this.sword(p).chargetime, 1);
@@ -732,6 +1051,10 @@ export class World {
     this.emit({ type: 'swing', id: p.id, tier, stance: a.stanceType, dir: a.dir });
   }
 
+  /**
+   * Runs the current action one tick: charge to release, swing cancels, the kind's own update, and what follows when its lock ends.
+   * @param {Player} p The fighter.
+   */
   updateAction(p) {
     const a = p.act;
     if (!a) return;
@@ -781,6 +1104,11 @@ export class World {
   }
 
   // -------------------------------------------------------------------- yaw
+  /**
+   * Turns the body toward the camera. It follows at once, unless the action or a recent hit limits the rate, or a rotation lock all but stops it.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
   updateYaw(p, dt) {
     if (p.frozen) return; // facing stays on the spawn until the round starts
     const a = p.act;
@@ -795,6 +1123,11 @@ export class World {
   }
 
   // -------------------------------------------------------------------- movement (CBerimbauGameMovement)
+  /**
+   * One tick of movement: input to a wish direction, gravity, jump, then animation, ground or air movement.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
   move(p, dt) {
     const cv = this.cv, a = p.act;
     const locked = p.frozen || !p.alive || p.kneeling || (a && a.moveLock && a.lock > 0);
@@ -853,8 +1186,13 @@ export class World {
   }
 
 
-  // [R 180370070, 18036f060] half the step before moving and half after, as Source does, on the ground too.
-  // Over bb_jumpgravity_time the scale goes start -> peak -> end, softer while jump is held.
+  /**
+   * [R 180370070, 18036f060] half the step before moving and half after, as Source does, on the ground too.
+   * Over bb_jumpgravity_time the scale goes start -> peak -> end, softer while jump is held.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   * @param {boolean} off No gravity this tick.
+   */
   gravity(p, dt, off) {
     p.gravityHalf = 0;
     if (off) return;
@@ -876,6 +1214,11 @@ export class World {
     for (let i = 0; i < 3; i++) p.vel[i] = Math.max(-mx, Math.min(mx, p.vel[i]));
   }
 
+  /**
+   * Source's ground friction.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
   friction(p, dt) {
     const v = p.vel;
     const sp = Math.hypot(v[0], v[1], v[2]);
@@ -887,7 +1230,15 @@ export class World {
     v[0] *= ns; v[1] *= ns; v[2] *= ns;
   }
 
-  // [R 18036d440] accel lerps from 15 at speed 40 up to the given value at sv_maxspeed
+  /**
+   * [R 18036d440] accel lerps from 15 at speed 40 up to the given value at sv_maxspeed
+   * @param {Player} p The fighter.
+   * @param {number[]} wish Unit direction.
+   * @param {number} wishSpeed Speed wanted.
+   * @param {number} accel Acceleration at full speed.
+   * @param {number} dt Seconds.
+   * @param {boolean} [charging] Use the charge run.
+   */
   accelerate(p, wish, wishSpeed, accel, dt, charging = false) {
     const mx = this.cv.f('sv_maxspeed');
     const k = mx === 40 ? (wishSpeed - 40 < 0 ? 0 : 1) : Math.max(0, Math.min(1, (wishSpeed - 40) / (mx - 40)));
@@ -906,7 +1257,13 @@ export class World {
     p.vel[1] += as * wish[1];
   }
 
-  // [R 18036d710] air drag keeps bb_air_drag of horizontal speed per 1/64s, then a small capped acceleration
+  /**
+   * [R 18036d710] air drag keeps bb_air_drag of horizontal speed per 1/64s, then a small capped acceleration
+   * @param {Player} p The fighter.
+   * @param {number[]} wish Unit direction.
+   * @param {number} wishSpeed Speed wanted, capped at 30 here.
+   * @param {number} dt Seconds.
+   */
   airAccelerate(p, wish, wishSpeed, dt) {
     const drag = Math.pow(num(p.act?.def?.air_drag_scale, this.cv.f('bb_air_drag')), dt * 64);
     p.vel[0] *= drag;
@@ -920,9 +1277,13 @@ export class World {
     p.vel[1] += as * wish[1];
   }
 
-  // [R 18036e810] while animation_move is on, velocity is the sequence's own motion this tick times move_scale
-  // [R 1803447b0, 180345ad0, 1803459f0] the action's animation_move, for the tier's animation_move_duration if it has
-  // one. An attack only moves this way after release, and an air_move one with a landing stops on touching down.
+  /**
+   * [R 18036e810] while animation_move is on, velocity is the sequence's own motion this tick times move_scale
+   * [R 1803447b0, 180345ad0, 1803459f0] the action's animation_move, for the tier's animation_move_duration if it has
+   * one. An attack only moves this way after release, and an air_move one with a landing stops on touching down.
+   * @param {Player} p The fighter.
+   * @returns {boolean} Whether the animation drives movement this tick.
+   */
   rootMotionActive(p) {
     const a = p.act;
     if (!a?.animMove || !a.seq || !a.dur) return false;
@@ -932,7 +1293,11 @@ export class World {
     return (window < 0 || a.t <= window) && a.t <= a.dur + TICK;
   }
 
-  // [R 18036e810] velocity comes from the sequence; height too for air_move, and noclip_move holds it level
+  /**
+   * [R 18036e810] velocity comes from the sequence; height too for air_move, and noclip_move holds it level
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
   rootMotion(p, dt) {
     const a = p.act, c = this.char(p);
     const c1 = a.cycle, c0 = Math.max(0, c1 - dt / a.dur);
@@ -949,8 +1314,19 @@ export class World {
     else if (flag(a.def?.noclip_move)) p.vel[2] = 0;
   }
 
+  /**
+   * A player-sized hull trace against the world.
+   * @param {number[]} a Start.
+   * @param {number[]} b End.
+   * @returns {object} The trace.
+   */
   trace(a, b) { return this.bsp.traceBox(a, b, HULL_MIN, HULL_MAX, MASK_PLAYERSOLID); }
 
+  /**
+   * Ground movement, including stepping up ledges of up to 18 units.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
   walkMove(p, dt) {
     const v = p.vel;
     if (Math.hypot(v[0], v[1]) < 1) { v[0] = v[1] = 0; return; }
@@ -973,6 +1349,11 @@ export class World {
     if (d1 >= d2) { p.origin = dnO; p.vel = dnV; } else p.vel[2] = dnV[2];
   }
 
+  /**
+   * Source's sliding move: up to four bumps, clipping velocity along what it hits.
+   * @param {Player} p The fighter.
+   * @param {number} dt Seconds.
+   */
   tryMove(p, dt) {
     const planes = [];
     const orig = [...p.vel];
@@ -1002,6 +1383,10 @@ export class World {
     }
   }
 
+  /**
+   * Decides whether the fighter is on the ground: floor within 2 units, no steeper than a 0.7 normal, and not moving up faster than 140. Also handles an air swing touching down.
+   * @param {Player} p The fighter.
+   */
   categorize(p) {
     const wasGround = p.onGround;
     if (p.vel[2] > 140) { p.onGround = false; return; }
@@ -1026,11 +1411,18 @@ export class World {
     } else p.onGround = false;
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {number} Height over whatever is below, at most 256.
+   */
   heightAboveGround(p) {
     const t = this.trace(p.origin, [p.origin[0], p.origin[1], p.origin[2] - 256]);
     return p.origin[2] - t.endpos[2];
   }
 
+  /**
+   * Overlapping fighters in an arena push apart, harder the deeper they overlap, rather than block each other.
+   */
   softCollide() {
     // bb_player_softcollision: overlapping fighters are pushed apart rather than blocked
     const P = this.players.filter((p) => p.alive);
@@ -1051,8 +1443,13 @@ export class World {
   }
 
   // -------------------------------------------------------------------- tracer (CBerimbauTracer)
-  // [R 1803867c0, 180389b00] One blade sample, posed fresh: the swing's sequence with move_x/move_y from the current
-  // velocity, and the attacker's pitch split across the spine. base = sword_grip + fwd*grip_offset, tip = base + fwd*length.
+  /**
+   * [R 1803867c0, 180389b00] One blade sample, posed fresh: the swing's sequence with move_x/move_y from the current
+   * velocity, and the attacker's pitch split across the spine. base = sword_grip + fwd*grip_offset, tip = base + fwd*length.
+   * @param {Player} p The fighter.
+   * @param {number} cycle Point in the swing, 0 to 1.
+   * @returns {{base: number[], tip: number[]}} The blade's ends.
+   */
   bladeSample(p, cycle) {
     const c = this.char(p), a = p.act, cv = this.cv;
     let mx = 0, my = 0;
@@ -1080,7 +1477,12 @@ export class World {
     return { base: add(pos, scale(fwd, grip)).map(Math.trunc), tip: add(pos, scale(fwd, grip + L)).map(Math.trunc) };
   }
 
-  // [R 180389b77]
+  /**
+   * [R 180389b77]
+   * How much of the view's pitch aims the swing.
+   * @param {number} pitch View pitch in degrees.
+   * @returns {number} Pitch to apply, within the cvar limits.
+   */
   aimPitch(pitch) {
     const cv = this.cv;
     if (!cv.f('bb_tracer_pitchaiming_enable')) return 0;
@@ -1088,7 +1490,11 @@ export class World {
     return v < mn ? mn : Math.min(cv.f('bb_tracer_pitchaiming_max'), v);
   }
 
-  // [R 180385f70] appends a sample, keeping 20, and boxes it with the one before for the clash test
+  /**
+   * [R 180385f70] appends a sample, keeping 20, and boxes it with the one before for the clash test
+   * @param {Player} p The fighter.
+   * @param {number} cycle Point in the swing.
+   */
   pushBlade(p, cycle) {
     const a = p.act, seg = this.bladeSample(p, cycle), ring = a.bladeRing;
     ring.push(seg);
@@ -1097,7 +1503,12 @@ export class World {
     a.trNew++;
   }
 
-  // [R 180386145] The swept blade between two samples, as an oriented box. x runs along the blade and z along the swing.
+  /**
+   * [R 180386145] The swept blade between two samples, as an oriented box. x runs along the blade and z along the swing.
+   * @param {{base: number[], tip: number[]}} prev The earlier sample.
+   * @param {{base: number[], tip: number[]}} cur The later sample.
+   * @returns {object} center, along, sweepDir, and the box's mn and mx on those axes.
+   */
   bladeBox(prev, cur) {
     const mid = (s) => scale(add(s.base, s.tip), 0.5);
     const mp = mid(prev), sweep = sub(mid(cur), mp);
@@ -1118,8 +1529,11 @@ export class World {
     return { center, along, sweepDir: normOr(sweep), mn, mx };
   }
 
-  // [R 180388570] The server's clock is the sequence's own rate from the release, paused while frozen. Samples come at the
-  // script's cycles; after the last one, every tick until the extension runs out. Those only count for clashes.
+  /**
+   * [R 180388570] The server's clock is the sequence's own rate from the release, paused while frozen. Samples come at the
+   * script's cycles; after the last one, every tick until the extension runs out. Those only count for clashes.
+   * @param {Player} p The fighter.
+   */
   updateTracer(p) {
     const a = p.act;
     if (a.trDone || !a.tracer) return;
@@ -1145,9 +1559,13 @@ export class World {
     this.collectHits(p);
   }
 
-  // [R 1803893bd, 18034b3a0, 1803873e0] A fighter in Guard holds a box at the sword grip. It has to be nearer the attacker's
-  // eye than the fighter's own. The box is passed along with its back corner in both slots, so it reaches past the grip by
-  // length_back and has a radius of 2*width. [I] its second axis is never filled in by the game; the blade's stands in.
+  /**
+   * [R 1803893bd, 18034b3a0, 1803873e0] A fighter in Guard holds a box at the sword grip. It has to be nearer the attacker's
+   * eye than the fighter's own. The box is passed along with its back corner in both slots, so it reaches past the grip by
+   * length_back and has a radius of 2*width. [I] its second axis is never filled in by the game; the blade's stands in.
+   * @param {Player} p The fighter.
+   * @returns {Player|null} A guarding fighter this swing reaches.
+   */
   findGuard(p) {
     const ring = p.act.bladeRing, cv = this.cv;
     for (const q of this.players) {
@@ -1168,7 +1586,11 @@ export class World {
     return null;
   }
 
-  // [R 18034b5c0] The guard takes the interrupt and both are pushed apart, by the attacker's stance. The swing itself carries on.
+  /**
+   * [R 18034b5c0] The guard takes the interrupt and both are pushed apart, by the attacker's stance. The swing itself carries on.
+   * @param {Player} p The attacker.
+   * @param {Player} q The guard.
+   */
   applyGuard(p, q) {
     const cv = this.cv, st = p.act.stanceType;
     const [name, push] = st === 0 ? ['balanced', 0.3] : st === 2 ? ['heavy', 0.7] : ['fast', 0.2];
@@ -1184,7 +1606,11 @@ export class World {
     this.emit({ type: 'guarded', attacker: p.id, defender: q.id, dir: this.swingDir(p, q), pos: add(q.origin, [0, 0, 40]) });
   }
 
-  // [R 1803890c0] Newest samples first against the opponent's, within 300 units. Only a live tracer on the other side counts.
+  /**
+   * [R 1803890c0] Newest samples first against the opponent's, within 300 units. Only a live tracer on the other side counts.
+   * @param {Player} p The fighter.
+   * @returns {Player|null} A fighter whose blade met this one.
+   */
   findClash(p) {
     const mine = p.act.bladeRing;
     for (const q of this.players) {
@@ -1199,8 +1625,14 @@ export class World {
     return null;
   }
 
-  // [R 180389580] Each box reduces to a segment and a radius of 2*sqrt(y*z); a foil doubles its own radius.
-  // They clash if the segments pass within the larger of the two.
+  /**
+   * [R 180389580] Each box reduces to a segment and a radius of 2*sqrt(y*z); a foil doubles its own radius.
+   * They clash if the segments pass within the larger of the two.
+   * @param {Player} p The fighter whose box is a, for the foil's doubling.
+   * @param {object} a Their blade box.
+   * @param {object} b The other blade box.
+   * @returns {boolean} Whether they clash.
+   */
   boxesClash(p, a, b) {
     let ra = 2 * Math.sqrt(a.mx[1] * a.mx[2]);
     const rb = 2 * Math.sqrt(b.mx[1] * b.mx[2]);
@@ -1212,6 +1644,12 @@ export class World {
     return Math.hypot(close[0][0] - close[1][0], close[0][1] - close[1][1], close[0][2] - close[1][2]) < Math.max(ra, rb);
   }
 
+  /**
+   * One fighter's state in the form combat.js takes.
+   * @param {Player} p The fighter.
+   * @param {object} sw Their sword script.
+   * @returns {object} The state.
+   */
   fighter(p, sw) {
     const a = p.act;
     return {
@@ -1222,6 +1660,11 @@ export class World {
     };
   }
 
+  /**
+   * Two blades met: runs the clash rules and applies hitstop, turning, and staggers to both.
+   * @param {Player} p One fighter.
+   * @param {Player} q The other.
+   */
   applyClash(p, q) {
     const cv = this.cv;
     const r = C.resolveClash(this.fighter(p, this.sword(p)), this.fighter(q, this.sword(q)), {
@@ -1244,7 +1687,12 @@ export class World {
     this.emit({ type: 'parried', attacker: hi.id, defender: lo.id, delta: r.delta, dir: this.swingDir(hi, lo), pos: r.effectOrigin });
   }
 
-  // [client 1803d7370] effect direction: the last few blade steps, or attacker minus victim before there are any
+  /**
+   * [client 1803d7370] effect direction: the last few blade steps, or attacker minus victim before there are any
+   * @param {Player} att The attacker.
+   * @param {Player} vic The victim.
+   * @returns {number[]} Direction for the effect, not normalized.
+   */
   swingDir(att, vic) {
     const r = att.act?.bladeRing || [];
     if (r.length < 2) return [att.origin[0] - vic.origin[0], att.origin[1] - vic.origin[1], att.origin[2] - vic.origin[2]];
@@ -1252,23 +1700,34 @@ export class World {
     return [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {number[][]} Every bone's world matrix in the fighter's current pose.
+   */
   poseWorld(p) {
     const c = this.char(p);
     const pose = c.evalLayers(animLayers(c, this.animOf(p)));
     return c.boneMatrices(pose, entityMatrix(p.origin, [0, p.yaw, 0]));
   }
 
+  /**
+   * @param {Player} p The fighter.
+   * @returns {object} The idle sequence for the fighter's stance.
+   */
   idleSeq(p) {
     const st = this.data.stanceFor(p.character, p.stance);
     return this.char(p).seqForActivity(st?.idle || 'ACT_BB_B_IDLE') || this.char(p).seqs[0];
   }
 
-  // [R 180387640] Newest samples first, at least max(new samples, bb_tracer_max_hit_tests + 1) of them. Each traces
-  // base to tip, and if that is clear, the previous tip to this tip, so a fast blade can't step over a fighter.
-  // Both are bb_tracer_thickness hull traces. The engine only tests hitboxes for true rays [R engine.dll 180257d40],
-  // so these hit the fighter's bounding box rather than the model's hitboxes.
-  // [R 180388e18] Testing stops once the script's samples are used up, so its last sample never hits.
-  // [R 180388de2] Further hits wait multihitRate * bb_timebetweenhits.
+  /**
+   * [R 180387640] Newest samples first, at least max(new samples, bb_tracer_max_hit_tests + 1) of them. Each traces
+   * base to tip, and if that is clear, the previous tip to this tip, so a fast blade can't step over a fighter.
+   * Both are bb_tracer_thickness hull traces. The engine only tests hitboxes for true rays [R engine.dll 180257d40],
+   * so these hit the fighter's bounding box rather than the model's hitboxes.
+   * [R 180388e18] Testing stops once the script's samples are used up, so its last sample never hits.
+   * [R 180388de2] Further hits wait multihitRate * bb_timebetweenhits.
+   * @param {Player} p The fighter.
+   */
   collectHits(p) {
     const cv = this.cv, thick = cv.f('bb_tracer_thickness');
     const a = p.act, sw = this.sword(p), ring = a.bladeRing;
@@ -1290,7 +1749,15 @@ export class World {
     }
   }
 
-  // One trace: whichever it reaches first of a fighter's bounding box or the world
+  /**
+   * One trace: whichever it reaches first of a fighter's bounding box or the world
+   * @param {Player} p The attacker.
+   * @param {number[]} from Start.
+   * @param {number[]} to End.
+   * @param {object} w The same trace against the world.
+   * @param {number} thick bb_tracer_thickness.
+   * @returns {boolean} True if it reached a fighter, which ends this tick's tests.
+   */
   bladeTrace(p, from, to, w, thick) {
     const reach = w.startsolid ? 1 : w.fraction;
     for (const v of this.players) {
@@ -1309,7 +1776,14 @@ export class World {
     return false;
   }
 
-  // [R 18036c180 / V] one sword hit
+  /**
+   * [R 18036c180 / V] one sword hit
+   * From the blade touching a fighter to the health coming off, in order: damage, knockback, block or parry, combo scaling,
+   * the dash multiplier, hit outcome, then the reaction. An intercept returns early and does none of the later steps.
+   * @param {Player} att The attacker.
+   * @param {Player} vic The victim.
+   * @param {number[]} pos Where it hit.
+   */
   resolveHit(att, vic, pos) {
     const cv = this.cv, sw = this.sword(att), a = att.act;
     const svd = {
@@ -1384,8 +1858,16 @@ export class World {
     this.applyReaction(att, vic, result, sw, a);
   }
 
-  // [R 18034b8c0, 18036ca10] recovery by attacker stance and outcome. Any hit clears the downed state, and
-  // tier 3 with tier3shouldknockdown knocks straight down.
+  /**
+   * [R 18034b8c0, 18036ca10] recovery by attacker stance and outcome. Any hit clears the downed state, and
+   * tier 3 with tier3shouldknockdown knocks straight down.
+   * A second hit of a multi-hit doesn't stun again unless bb_multihit_stun is on.
+   * @param {Player} att The attacker.
+   * @param {Player} vic The victim.
+   * @param {number} result A HIT_ value.
+   * @param {object} sw The attacker's sword.
+   * @param {Action} a The swing.
+   */
   applyReaction(att, vic, result, sw, a) {
     const cv = this.cv;
     vic.kneeling = false;
@@ -1404,7 +1886,10 @@ export class World {
   }
 
   // -------------------------------------------------------------------- grab
-  // [R 180349790] the attempt opens after bb_grab_delay and closes bb_grab_duration later
+  /**
+   * [R 180349790] the attempt opens after bb_grab_delay and closes bb_grab_duration later
+   * @param {Player} p The fighter.
+   */
   updateGrab(p) {
     const a = p.act, cv = this.cv, delay = cv.f('bb_grab_delay');
     if (a.throwVictim !== undefined) { this.updateThrow(p); return; }
@@ -1422,7 +1907,11 @@ export class World {
     if (a.t >= delay) { a.grabDone = true; this.startThrow(p, v); }
   }
 
-  // [R 180379710] the closest fighter in range, in front, and within half a hull height
+  /**
+   * [R 180379710] the closest fighter in range, in front, and within half a hull height
+   * @param {Player} p The fighter.
+   * @returns {Player|null} Who a grab would catch.
+   */
   grabTarget(p) {
     let best = null, range = this.cv.f('bb_grab_range'), minDot = this.cv.f('bb_grab_dot');
     const { forward: f } = angleVectors([0, p.yaw, 0]);
@@ -1437,8 +1926,13 @@ export class World {
     return best;
   }
 
-  // [R 1803498f0] the victim is pulled in front of the grabber, both face each other, the grabber plays
-  // ACT_BB_THROW for its full length and the victim plays Thrown
+  /**
+   * [R 1803498f0] the victim is pulled in front of the grabber, both face each other, the grabber plays
+   * ACT_BB_THROW for its full length and the victim plays Thrown
+   * Some states can't be thrown: dead, falling, the recovery attack, and hit reactions.
+   * @param {Player} p The grabber.
+   * @param {Player} v The victim.
+   */
   startThrow(p, v) {
     const kind = v.act?.kind, name = v.act?.name;
     if (kind === 'kill' || name === 'Fall' || name === 'KneelingFalling' || name === 'RecoveryAttack') return;
@@ -1461,6 +1955,10 @@ export class World {
     this.emit({ type: 'grab', attacker: p.id, victim: v.id });
   }
 
+  /**
+   * The grabber's side of a throw: deals bb_throw_damage at the slice event, if the victim is still being thrown.
+   * @param {Player} p The grabber.
+   */
   updateThrow(p) {
     const a = p.act;
     if (a.sliced || a.cycle < a.sliceCycle) return;
@@ -1473,7 +1971,10 @@ export class World {
     if (v.health <= 0) this.kill(v, p);
   }
 
-  // [R 18034d490] pressing grab inside bb_grab_break_window frees both fighters; the victim recovers sooner
+  /**
+   * [R 18034d490] pressing grab inside bb_grab_break_window frees both fighters; the victim recovers sooner
+   * @param {Player} p The one being thrown.
+   */
   updateThrown(p) {
     const a = p.act, cv = this.cv;
     if (!(p.pressed & IN.GRAB) || a.lockDur - a.lock >= cv.f('bb_grab_break_window')) return;
@@ -1484,6 +1985,10 @@ export class World {
     this.emit({ type: 'grab_break', id: p.id, victim: g?.id });
   }
 
+  /**
+   * @param {Player} v The victim.
+   * @param {Player} [att] Who did it.
+   */
   kill(v, att) {
     v.alive = false;
     v.health = 0;
@@ -1492,12 +1997,16 @@ export class World {
     this.duels[v.arena].onDeath(v, att);
   }
 
-  // Animation state, shared by the client and server hitboxes. Mirrors CBerimbauPlayerAnimState.
-  // [R 18037c590] locomotion activity: idle below 0.5 u/s, else walk or run
-  // [R 18037e1b0] max ground speed: sv_maxspeed for run, times the walk multiplier for idle and walk
-  // [R 18013d340] move_x = cos(yaw)*rate*scale, move_y = -sin(yaw)*rate*scale, yaw relative to the body;
-  //               scale goes from 1 on the axes to sqrt(2) on diagonals (circle onto the square grid)
-  // [R 18037d550] cycle rate = max(1, rate)
+  /**
+   * Animation state, shared by the client and server hitboxes. Mirrors CBerimbauPlayerAnimState.
+   * [R 18037c590] locomotion activity: idle below 0.5 u/s, else walk or run
+   * [R 18037e1b0] max ground speed: sv_maxspeed for run, times the walk multiplier for idle and walk
+   * [R 18013d340] move_x = cos(yaw)*rate*scale, move_y = -sin(yaw)*rate*scale, yaw relative to the body;
+   *               scale goes from 1 on the axes to sqrt(2) on diagonals (circle onto the square grid)
+   * [R 18037d550] cycle rate = max(1, rate)
+   * @param {Player} p The fighter.
+   * @returns {object} st (stance script), base (activity), speed, moving, rate.
+   */
   locomotion(p) {
     const a = p.act, st = this.data.stanceFor(p.character, a?.attack ? a.stanceType : p.stance) || {};
     const speed = Math.hypot(p.vel[0], p.vel[1]);
@@ -1515,7 +2024,10 @@ export class World {
     return { st, base, speed, moving, rate };
   }
 
-  // Animation clocks run once per simulated tick, so they keep real time however often animOf is read.
+  /**
+   * Animation clocks run once per simulated tick, so they keep real time however often animOf is read.
+   * @param {Player} p The fighter.
+   */
   advanceAnim(p) {
     const { base, rate, speed, moving } = this.locomotion(p);
     const c = this.char(p), seq = c.seqForActivity(base);
@@ -1553,6 +2065,11 @@ export class World {
     } else p.chargeRun = runTarget;
   }
 
+  /**
+   * What the fighter's pose is made of this tick, sent to clients and used for the blade.
+   * @param {Player} p The fighter.
+   * @returns {object} base, baseCycle, upper, upperCycle, mx, my, speed, armsFrom, charge, land, legs, touch, wr.
+   */
   animOf(p) {
     const a = p.act;
     const { st, speed, moving, rate, base: loco } = this.locomotion(p);
@@ -1602,7 +2119,13 @@ export class World {
   }
 }
 
-// Turns an animOf() result into sequence layers. Shared by the client and server hitboxes.
+/**
+ * Turns an animOf() result into sequence layers. Shared by the client and server hitboxes.
+ * Order matters: base, borrowed arms, upper body, charge, touchdown, landing, jump legs. Takes the snapshot's short names as well.
+ * @param {Character} c The character.
+ * @param {object} an animOf's result, or the same from a snapshot.
+ * @returns {Array<object>} Layers for Character.evalLayers.
+ */
 export function animLayers(c, an) {
   const base = c.seqForActivity(an.base ?? an.b) || c.seqForActivity('ACT_BB_B_IDLE') || c.seqs[0];
   const [px, py] = c.blendFor(base, an.mx, an.my, an.wr ?? 0);
@@ -1632,7 +2155,14 @@ const fnumOpt = fnum;
 const inum = (v) => (v === undefined || v === null ? null : parseInt(v, 10));
 
 const normOr = (a) => { const l = Math.hypot(a[0], a[1], a[2]); return l > 0 ? [a[0] / l, a[1] / l, a[2] / l] : [0, 0, 0]; };
-// [R 1803880a0] Closest points of the two lines, each then clamped into its segment's bounds. Null if near parallel or too short.
+/**
+ * [R 1803880a0] Closest points of the two lines, each then clamped into its segment's bounds. Null if near parallel or too short.
+ * @param {number[]} p1 First segment's start.
+ * @param {number[]} p2 First segment's end.
+ * @param {number[]} p3 Second segment's start.
+ * @param {number[]} p4 Second segment's end.
+ * @returns {number[][]|null} The closest point on each.
+ */
 function closestOnSegments(p1, p2, p3, p4) {
   const p13 = sub(p1, p3), p43 = sub(p4, p3), p21 = sub(p2, p1);
   if (Math.abs(p43[0]) < 0.01 && Math.abs(p43[1]) < 0.01 && Math.abs(p43[2]) < 0.01) return null;
@@ -1645,7 +2175,15 @@ function closestOnSegments(p1, p2, p3, p4) {
   return [clamp(add(p1, scale(p21, mua)), p1, p2), clamp(add(p3, scale(p43, mub)), p3, p4)];
 }
 
-// Where along a->b the segment first enters the padded box, or -1 if it misses.
+/**
+ * Where along a->b the segment first enters the padded box, or -1 if it misses.
+ * @param {number[]} a Start.
+ * @param {number[]} b End.
+ * @param {number[]} mn Box minimum.
+ * @param {number[]} mx Box maximum.
+ * @param {number} pad Grown by this on every side.
+ * @returns {number} Fraction along a to b, or -1.
+ */
 function segHitT(a, b, mn, mx, pad) {
   let t0 = 0, t1 = 1;
   for (let i = 0; i < 3; i++) {
@@ -1659,6 +2197,13 @@ function segHitT(a, b, mn, mx, pad) {
   return t0;
 }
 
+/**
+ * @param {number[]} p1 First segment's start.
+ * @param {number[]} q1 First segment's end.
+ * @param {number[]} p2 Second segment's start.
+ * @param {number[]} q2 Second segment's end.
+ * @returns {number} The shortest distance between two segments.
+ */
 export function segSegDist(p1, q1, p2, q2) {
   const d1 = sub(q1, p1), d2 = sub(q2, p2), r = sub(p1, p2);
   const A = dot(d1, d1), E = dot(d2, d2), F = dot(d2, r);
@@ -1677,13 +2222,19 @@ export function segSegDist(p1, q1, p2, q2) {
 }
 
 // ---------------------------------------------------------------------- duel (CBerimbauDuel)
-// [R 18032c4c0, 18032d420, 18032df30] best of vs_duel_rounds; frozen warmup, fight, intermission, cooldown.
-// One per berimbau_duel: its own queue, match and spawns, side by side on the map.
-// [R server.dll 18031ea20, 18031e37b, 18032df30, 180329070] The queue is everyone in the arena in order, fighters included.
-// A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to
-// the back, and after the cooldown the front two play.
+/**
+ * [R 18032c4c0, 18032d420, 18032df30] best of vs_duel_rounds; frozen warmup, fight, intermission, cooldown.
+ * One per berimbau_duel: its own queue, match and spawns, side by side on the map.
+ * [R server.dll 18031ea20, 18031e37b, 18032df30, 180329070] The queue is everyone in the arena in order, fighters included.
+ * A match takes the front two. When it ends the winner goes to the front and the loser to the back, a draw sends both to
+ * the back, and after the cooldown the front two play.
+ */
 export class Duel {
-  // Arenas with both team's spawns, in name order. A map without any gets one over all its spawns.
+  /**
+   * Arenas with both team's spawns, in name order. A map without any gets one over all its spawns.
+   * @param {World} w The world.
+   * @returns {Duel[]} The map's arenas.
+   */
   static forMap(w) {
     const b = w.bsp;
     const spawns = b.entities.filter((e) => e.classname === 'berimbau_spawn' && e.origin);
@@ -1692,6 +2243,11 @@ export class Duel {
     return (ents.length ? ents : [null]).map((e, i) => new Duel(w, i, e));
   }
 
+  /**
+   * @param {World} world The world.
+   * @param {number} [index] Arena index.
+   * @param {object} [ent] Its berimbau_duel entity; null for a map without one.
+   */
   constructor(world, index = 0, ent = null) {
     this.w = world;
     this.index = index;
@@ -1703,9 +2259,16 @@ export class Duel {
     this.arena = null;
   }
 
+  /**
+   * @param {object} e Event; the arena's index is added.
+   */
   emit(e) { this.w.emit({ ...e, arena: this.index }); }
 
-  // [R 18031e190] bb_queue_bot_discrimination: a person waiting doesn't wait behind a bot
+  /**
+   * [R 18031e190] bb_queue_bot_discrimination: a person waiting doesn't wait behind a bot
+   * Also ends a bot match on the spot when a person arrives.
+   * @param {Player} p The fighter.
+   */
   enqueue(p) {
     if (this.queue.includes(p)) return;
     p.arena = this.index;
@@ -1715,6 +2278,10 @@ export class Duel {
     else this.refill();
   }
 
+  /**
+   * Takes someone out of the arena. A fighter leaving ends the match.
+   * @param {number} id Player id.
+   */
   drop(id) {
     const p = this.queue.find((q) => q.id === id);
     if (!p) return;
@@ -1724,13 +2291,18 @@ export class Duel {
     if (playing) this.abort(); else this.refill();
   }
 
+  /**
+   * Ends the match with no result and lets the queue refill.
+   */
   abort() {
     this.state = 'waiting'; this.fighters = [];
     this.emit({ type: 'duel_aborted' });
     this.refill();
   }
 
-  // Waiting: the front two play. One alone has the arena to themselves; nobody else in the arena stays in the world.
+  /**
+   * Waiting: the front two play. One alone has the arena to themselves; nobody else in the arena stays in the world.
+   */
   refill() {
     if (this.state !== 'waiting') return;
     this.queue.sort((a, b) => (a.isBot ? 1 : 0) - (b.isBot ? 1 : 0));
@@ -1741,13 +2313,20 @@ export class Duel {
     else if (front.length === 1) this.placeSolo(front[0]);
   }
 
+  /**
+   * The one person here walks around from the first spawn, a unit up so they don't start inside the floor.
+   * @param {Player} p The fighter.
+   */
   placeSolo(p) {
     const s = this.pickSpawnPair();
-    p.reset(s[0].o, s[0].yaw);
+    p.reset([s[0].o[0], s[0].o[1], s[0].o[2] + 1], s[0].yaw);
     p.frozen = false;
   }
 
-  // Spawns carry explicit arena and team keys: duel=<berimbau_duel targetname>, duelteam=1|2, spawnid.
+  /**
+   * Spawns carry explicit arena and team keys: duel=<berimbau_duel targetname>, duelteam=1|2, spawnid.
+   * @returns {Array<{o: number[], yaw: number, e: object}>} A clear spawn for each team.
+   */
   pickSpawnPair() {
     const b = this.w.bsp;
     const parse = (e) => ({ o: e.origin.split(' ').map(Number), yaw: parseFloat((e.angles || '0 0 0').split(' ')[1]), e });
@@ -1762,6 +2341,9 @@ export class Duel {
     return [list[0], list[1] || list[0]];
   }
 
+  /**
+   * @param {Player[]} P The two fighters.
+   */
   beginMatch(P) {
     this.fighters = P.map((p) => p.id);
     this.wins = Object.fromEntries(P.map((p) => [p.id, 0]));
@@ -1769,6 +2351,10 @@ export class Duel {
     this.startRound(true);
   }
 
+  /**
+   * Both fighters go back to their spawns, frozen for the warmup, and any loadout changed mid-match applies.
+   * @param {boolean} first The match's first round, which has the longer warmup.
+   */
   startRound(first) {
     this.w.stars = this.w.stars.filter((s) => s.arena !== this.index);
     const cv = this.w.cv;
@@ -1787,6 +2373,9 @@ export class Duel {
     this.emit({ type: 'round_start', round: this.round, warmup: this.timer, maxRounds: cv.f('vs_duel_rounds') });
   }
 
+  /**
+   * Runs the arena's clock: warmup to fight, time up, intermission, cooldown.
+   */
   update() {
     const cv = this.w.cv;
     if (this.state === 'waiting') return;
@@ -1821,11 +2410,19 @@ export class Duel {
     }
   }
 
+  /**
+   * @param {Player} v Who died.
+   * @param {Player} [att] Who killed them.
+   */
   onDeath(v, att) {
     if (this.state !== 'fight') return;
     this.endRound(att && this.fighters.includes(att.id) ? att : this.w.player(this.fighters.find((id) => id !== v.id)), 'kill');
   }
 
+  /**
+   * @param {Player|null} winner The winner, null for a draw.
+   * @param {string} why 'kill' or 'timeup'.
+   */
   endRound(winner, why) {
     const cv = this.w.cv;
     if (winner) this.wins[winner.id] = (this.wins[winner.id] || 0) + 1;
@@ -1836,6 +2433,9 @@ export class Duel {
     this.emit({ type: 'round_end', winner: winner?.id ?? null, why, wins: this.wins });
   }
 
+  /**
+   * Ends the match once someone has a majority of vs_duel_rounds, or after four rounds past that with no winner; otherwise the next round starts.
+   */
   afterIntermission() {
     const cv = this.w.cv;
     const need = Math.floor(cv.f('vs_duel_rounds') / 2) + 1;
