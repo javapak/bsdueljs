@@ -16,6 +16,7 @@ import { makeBotBrain } from '../shared/bot.js';
 import { buildSnapshot } from '../shared/snapshot.js';
 import { acceptWebSocket } from './ws.mjs';
 import { createRelay } from '../p2p/relay.mjs';
+import { resolveCase } from './casefile.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: args } = parseArgs({ options: {
@@ -45,7 +46,7 @@ const cookieToken = (req) => /(?:^|;\s*)bsduel=([^;]+)/.exec(req.headers.cookie 
 const findFile = (rel) => {
   const clean = normalize(rel).replace(/\\/g, '/');
   if (clean.startsWith('..') || clean.startsWith('/') || clean.includes('/../')) return null;
-  for (const r of roots) { const p = join(r, clean); if (p.startsWith(r + sep) && existsSync(p) && statSync(p).isFile()) return p; }
+  for (const r of roots) { const p = resolveCase(r, clean); if (p && p.startsWith(r + sep) && statSync(p).isFile()) return p; }
   return null;
 };
 /**

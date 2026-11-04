@@ -2,7 +2,10 @@
 // Usage: node tests/hosted_check.mjs "<install>"
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveCase } from '../server/casefile.mjs';
 const install = process.argv[2], PORT = 27097, TOKEN = 'hosted-check-token';
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const srv = spawn('node', ['server/main.mjs', '--hosted', '--token', TOKEN, '--map', 'duel_practice_box', '--port', String(PORT), '--host', '127.0.0.1', '--game', install], { cwd: repo, stdio: ['ignore', 'pipe', 'inherit'] });
@@ -19,6 +22,18 @@ const get = (path, cookie) => new Promise((ok, no) => {
 const C = `bsduel=${TOKEN}`;
 try {
   check(banner.includes(`token=${TOKEN}`), 'it prints the link to share');
+  // Linux is case-sensitive and this may be running on Windows, so these check the spelling that comes back, which only the disk can give
+  const G = join(install, 'berimbau');
+  check(resolveCase(G, 'SCRIPTS/Items.JSON') === join(G, 'scripts', 'items.json'), 'a path in the wrong case finds the file, spelled as it is on disk');
+  check(resolveCase(G, 'scripts/no_such_file.txt') === null, 'and a file that does not exist finds nothing');
+  const onDisk = new Set();
+  const walk = (d) => { for (const n of readdirSync(d)) { const p = join(d, n); if (statSync(p).isDirectory()) walk(p); else onDisk.add(relative(G, p).split(sep).join('/')); } };
+  for (const d of ['scripts', 'models/player/characters']) walk(join(G, d));
+  const items = JSON.parse(readFileSync(join(G, 'scripts/items.json'), 'latin1')).items.filter((i) => i.model);
+  let wrong = 0, lost = 0, modelPaths = 0;
+  walkModels: for (const i of items) { modelPaths++; const m = i.model.split(String.fromCharCode(92)).join('/'); if (!resolveCase(G, m)) { lost++; continue walkModels; } if (relative(G, resolveCase(G, m)).split(sep).join('/') !== m) wrong++; }
+  console.log(`     ${modelPaths} item models in the catalog: ${wrong} spelled differently from the disk, which Linux would have missed; ${lost} not installed`);
+  check((await get('/game/SCRIPTS/ITEMS.JSON', C)).status === 200, 'the server answers a path in the wrong case');
   for (const p of ['/', '/index.html', '/main.js', '/shared/sim.js', '/api/info', '/game/scripts/items.json', '/game/maps/duel_temple.bsp']) check((await get(p)).status === 401, `no token, no ${p}`);
   check((await get('/?token=wrong')).status === 401, 'a wrong token gets nothing');
   check((await get('/', 'bsduel=wrong')).status === 401, 'nor does a wrong cookie');
