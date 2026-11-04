@@ -339,7 +339,10 @@ function frameCharacter(p, ci, world) {
   return { bones: inst.bones, mesh: inst.body ?? ci.mesh, world: bones };
 }
 // Values the charge proxies hand bb_charge, from the character's material
-function setCharge(fc, amount, color) {
+// [R client 1802b0e4b] during the dash's cooldown, after the dash itself, a rim beats on the fighter: $CHARGEEXTRARIMLIGHT*, its color 255 79 79
+// [I] the amplitude: 1.5 instead when a check on the game mode passes, which wasn't identified
+function dashRim(p) { return p.dc > 0 && p.a?.n !== 'AirDash' ? Math.abs(Math.sin(p.dc * 5)) * 0.75 : 0; }
+function setCharge(fc, amount, color, rim = 0) {
   const v = fc.mesh.chargeParams || {}, data = fc.bones.data, t = performance.now() / 1000;
   const n = (k, d) => { const x = parseFloat(v[k]); return Number.isNaN(x) ? d : x; };
   const a2 = amount * amount;
@@ -348,10 +351,11 @@ function setCharge(fc, amount, color) {
     color[0], color[1], color[2], 1,
     n('$chargenoiseamount', 0.75), n('$chargenoisebasescale', 0.1), n('$chargespecularboost', 1.5), n('$chargeglowboost', 1),
     n('$chargefresnelpowermin', 0.8), n('$chargefresnelpowermax', 4), n('$chargefresnelamountmin', 0.4) + (n('$chargefresnelamountmax', 2) - n('$chargefresnelamountmin', 0.4)) * a2, 0,
-    n('$chargedarkenmaxinner', 0.7), n('$chargedarkenmaxouter', 1), 0, 1,
-    0, 0, 0, 0,
+    n('$chargedarkenmaxinner', 0.7), n('$chargedarkenmaxouter', 1), rim, 2,
+    255, 79, 79, 0,
   ], 128 * 12 + 4);
   fc.charge = amount;
+  fc.rim = rim;
 }
 // The first entry of the character's colorlist; the game networks the player's choice as m_vecCharacterColor [I: which entry]
 // An outfit color from the customization screen stands in for the character's own [I]
@@ -452,9 +456,8 @@ function previewFrame(time) {
     fc.mesh = inst.body ?? ci.mesh;
     parts.push(fc);
     for (const part of look) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
-    // the sword itself is on the wheel; the fighter only shows its scabbard
     const held = swordParts(p);
-    if (held) for (const part of held.slice(1)) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
+    if (held) for (const part of held) { R.attachTo(fc, part, c); if (part.shown) parts.push(part); }
     const list = customize.list, at = Math.max(0, list.indexOf(customize.sword));
     for (let i = 0; i < WHEEL.slots; i++) {
       const part = wheelPart(i, list[(at + (i - WHEEL.middle) + list.length * 12) % list.length]);
@@ -548,7 +551,7 @@ async function tick() {
       R.lightCharacter(fc, p.o);
       const color = lookColor(p) ?? charColor(p.c);
       const st = fx.updatePlayer(p, ci.char, fc.world, ci.gripBone, color);
-      setCharge(fc, st.charge, color);
+      setCharge(fc, st.charge, color, dashRim(p));
       characters.push(fc);
       for (const part of lookParts(p, ci)) { R.attachTo(fc, part, ci.char); if (part.shown) attached.push(part); }
       if (p.a?.th) {
@@ -600,7 +603,7 @@ async function tick() {
     R.drawPreviews(scoreboard.shots(canvas));
   }
   if (cur) hud(cur, me);
-  window.duelDebug.state = { snaps: snaps.length, myId, chars: characters.length, duel: cur?.snap?.duel, stats: R.stats, eye, me: me && { o: me.o, a: me.a, hp: me.hp, an: me.an } };
+  window.duelDebug.state = { snaps: snaps.length, myId, chars: characters.length, duel: cur?.snap?.duel, stats: R.stats, eye, me: me && { dc: me.dc, o: me.o, a: me.a, hp: me.hp, an: me.an } };
 }
 let lastHudAt = performance.now(), lastViewSent = 0;
 function hud(cur, me) {

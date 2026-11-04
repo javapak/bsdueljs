@@ -50,7 +50,7 @@ export class Player {
       health: 100, alive: true, act: null, hitstop: 0, buttons: 0, prevButtons: 0,
       jumpCooldown: 0, jumpGravityT: 0, comboIdx: 0, comboIdxTime: 0, comboCount: 0, comboResetTime: 0,
       hitsThisSwing: 0, lastHitTime: -100, multiBlock: 0, turnRate: 0, turnRateTime: 0, blockCooldown: 0,
-      moveCooldown: 0, animTime: 0, moveAmt: 0, frozen: false, forceImpulse: null,
+      moveCooldown: 0, dashCooldown: 0, animTime: 0, moveAmt: 0, frozen: false, forceImpulse: null,
       kneeling: false, airState: 0, airT: 0, landT: 0, landCycle: 0, airLandCycle: 0, moveCycle: 0, moveSeq: null, chargeCycle: 0, chargeFade: 0, chargeRun: 0, chargeAnims: null,
       bufferMask: 0, bufferT: 0, airStance: false, queuedStance: -1, touchdown: null,
       wallRuns: 0, wallAngle: 0, wallDir: [1, 0, 0], throwCooldown: 0,
@@ -105,6 +105,7 @@ export class World {
     p.jumpGravityT = Math.max(0, p.jumpGravityT - dt);
     p.blockCooldown = Math.max(0, p.blockCooldown - dt);
     p.moveCooldown = Math.max(0, p.moveCooldown - dt);
+    p.dashCooldown = Math.max(0, p.dashCooldown - dt);
     p.throwCooldown = Math.max(0, p.throwCooldown - dt);
     if (p.onGround) p.wallRuns = 0; // [R 180379e9f; that the ground is what clears it is I]
     p.turnRateTime = Math.max(0, p.turnRateTime - dt);
@@ -173,6 +174,7 @@ export class World {
     if (p.kneeling) { this.dispatchKneeling(p); return; }
     if (p.wants(IN.SHUFFLE) && this.canEvade(p)) { p.use(IN.SHUFFLE); this.startEvade(p, 'Shuffle'); return; }
     if (p.wants(IN.GRAB) && this.canGrab(p)) { p.use(IN.GRAB); this.startAction(p, 'Grab', { force: true, extra: { grabDone: false } }); return; }
+    if (p.wants(IN.ROLL) && this.canChargeDash(p)) { p.use(IN.ROLL); p.dashCooldown = this.cv.f('bb_dash_delay'); this.startEvade(p, 'AirDash'); return; }
     if (p.wants(IN.ROLL) && this.canEvade(p)) { p.use(IN.ROLL); this.startEvade(p, 'Roll'); return; }
     if (this.tryWallRun(p)) return;
     if (p.wants(IN.BLOCK) && this.isFeintSword(p)) {
@@ -506,6 +508,8 @@ export class World {
     const evading = a?.name === 'Roll' || a?.name === 'Shuffle' || a?.name === 'AirDash';
     const swinging = a?.attack && a.phase !== 'charge';
     let blocked = !a ? d >= cv.f('bb_throwable_autoblock_dot_min') : (a.kind === 'block' || a.kind === 'parry' || a.kind === 'guard') && d >= cv.f('bb_throwable_block_or_parry_dot_min');
+    // [R 180382464] no blocking throwables on the dash's cooldown
+    if (v.dashCooldown > 0) blocked = false;
     if (a?.name === 'Interrupt' || a?.name === 'KneelParry') blocked = true;
     const reacts = !evading && !swinging && !v.kneeling;
     const def = this.data.action('ThrowWeapon');
@@ -514,7 +518,7 @@ export class World {
       this.emit({ type: 'star_hit', what: 'blocked', star: s.id, kind: s.type, pos: s.pos, id: v.id });
       return;
     }
-    v.health -= cv.f('bb_throwable_damage_player');
+    v.health -= Math.trunc(this.dashDamage(v, cv.f('bb_throwable_damage_player')));
     this.emit({ type: 'star_hit', what: 'player', star: s.id, kind: s.type, pos: s.pos, id: v.id });
     if (v.health <= 0) { this.kill(v, this.player(s.owner)); return; }
     if (reacts && cv.f('bb_throwable_interrupt_on_hit')) this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction });
@@ -524,6 +528,18 @@ export class World {
   canEvade(p) {
     const a = p.act;
     return p.onGround && p.moveCooldown <= 0 && !(a && (a.kind === 'block' || a.lock > 0));
+  }
+
+  // [R 18037a0c2] roll on an attack charged to tier 2 or better, on the ground. It answers only to its own cooldown, not
+  // the one rolls wait on, and starts that one too. Until bb_dash_delay runs out you're vulnerable: see dashDamage, starHit.
+  canChargeDash(p) {
+    const a = p.act;
+    return (p.onGround || !!this.cv.f('bb_roll_air')) && !!a?.attack && a.phase === 'charge' && a.chargeTier >= 1 && p.dashCooldown <= 0;
+  }
+
+  // [R 18036d0a4 sword, 18033380d grab, 1803827c3 throwable] all of them hurt more during the dash's cooldown
+  dashDamage(v, damage) {
+    return v.dashCooldown > 0 ? damage * this.cv.f('bb_dash_damage_multiplier') : damage;
   }
 
   // [R 180378f10] the next shuffle or roll waits for the shorter of sequence and lock, plus 0.2s
@@ -670,13 +686,15 @@ export class World {
   }
 
   // [R client 1802ba0d0] What the attack preview shows: the swing under way, what the charge would release, or with no
-  // attack going, the first tier of what the stance, keys and string would start. Nothing while kneeling.
+  // action going, the first tier of what the stance, keys and string would start. Nothing during any other action or
+  // while kneeling.
   // [I] the string restarting after bb_string_reset_time counts here too, as it will once the attack starts.
   previewAttack(p) {
     if (p.kneeling) return null;
     const a = p.act;
     let def, tier = 0;
-    if (a?.attack) { def = a.def; tier = a.phase === 'swing' ? a.tier : this.chargedTier(p); }
+    if (a && !a.attack) return null;
+    if (a) { def = a.def; tier = a.phase === 'swing' ? a.tier : this.chargedTier(p); }
     else def = this.data.attackFor(p.character, this.stanceNow(p), this.moveDir(p), this.time - p.comboIdxTime > this.cv.f('bb_string_reset_time') ? 0 : p.comboIdx);
     const t = def?.['tier' + (tier + 1)] ?? def?.tier1;
     return t?.animation ? { a: t.animation, l: t.animation_lowerbody } : null;
@@ -1347,6 +1365,7 @@ export class World {
     }
     // [R 18036d066] the victim's string starts over; a condition just before this wasn't identified
     if (cv.f('bb_string_reset') && (result === C.HIT_LANDED || result === C.HIT_BLOCKED || result === C.HIT_GUARD_BROKEN)) vic.comboIdx = 0;
+    dmg.damage = this.dashDamage(vic, dmg.damage);
     const o = C.resolveHitOutcome({
       defense, resultAfterDefense: result, blockReturnedTrue: blockedTrue, attackerDirection: a.dir, attackerTier: a.tier, attackerActionId: a.id, hitsThisSwing: att.hitsThisSwing,
       attackerLockTimer: Math.fround(a.lock), attackerForce: [0, 0, 0], hitImpulse: [0, 0, 0], turnSelfX: fnum(sw.interceptturnselfx), recoveryBonusOnHit: fnum(sw.recoverybonusonhit),
@@ -1448,7 +1467,7 @@ export class World {
     a.sliced = true;
     const v = this.player(a.throwVictim);
     if (!v?.alive || v.act?.kind !== 'thrown') return;
-    const damage = this.cv.f('bb_throw_damage');
+    const damage = Math.trunc(this.dashDamage(v, this.cv.f('bb_throw_damage')));
     v.health -= damage;
     this.emit({ type: 'hit', attacker: p.id, victim: v.id, damage, pos: [v.origin[0], v.origin[1], v.origin[2] + 40] });
     if (v.health <= 0) this.kill(v, p);

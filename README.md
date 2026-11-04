@@ -119,6 +119,8 @@ charge and swing flow, tracer sampling and its clock, blade pose (move params, p
 
 **Wall moves:** running, the transition, sliding and both wall jumps follow `server.dll`. Only the first trace of the wall run's normal is ported (the game refines it with two more), that the ground clears the run count is inferred, and so is a slide or flip ending on landing.
 
+**Charge dash:** roll while charging an attack past tier 2 on the ground dashes instead (`AirDash`), dropping the charge. It ignores the roll's cooldown, and has its own of `bb_dash_delay`, 3.25s. For all of that you take `bb_dash_damage_multiplier`, 1.5x, from swords, grabs and throwables, can't block throwables, and a rim beats on you (`$CHARGEEXTRARIMLIGHT*`). Its color is 255 79 79, far past 1, so on the backbuffer format it clamps to a pale rim [I: not compared with live]. Its strength is 0.75 or 1.5 by a game mode check that wasn't identified [I: 0.75].
+
 **Throwables:** `E` throws the character's type from `scripts/throwabletypes.txt`. Flight, homing, damage and blocks follow `server.dll`; the star's lead on a moving target is a simple estimate, and blades don't deflect it in the air yet (`bounds_tracer`). It plays the model's own `ACT_FLY` tumble at the model's size, since the game never reads the script's `scale` key. That its +X points along the flight is inferred, and decals aren't drawn.
 
 **Ragdolls:** bodies, masses, damping and joint limits are the model's `.phy`, but the solver is `shared/ragdoll.js`, not Havok, so how a body falls is approximate, and it collides with the world only, as capsules.

@@ -136,6 +136,13 @@ export class FX {
         this.spawn('guard_fx', at(e.pos ?? c, e.dir));
         break;
       }
+      case 'action': { // ACT_BB_DASH_N's AE_CL_CREATE_PARTICLE_EFFECT, "player_dash follow_origin", right at its start
+        const st = e.name === 'AirDash' && this.players.get(e.id);
+        if (!st) break;
+        const point = () => makeCP(st.p.o);
+        this.spawn('player_dash', point(), (h) => { h.inst.setCP(0, Object.assign(point(), { entity: e.id })); });
+        break;
+      }
       case 'charge_tier': { // server 18022e3d0 at "chest", with CP1 carrying the character color as 0..1
         const name = e.tier === 2 ? 'charge_tier3_forward' : e.tier === 1 ? 'berimbau_player_charge' : null;
         const st = this.players.get(e.id);

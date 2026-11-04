@@ -422,7 +422,8 @@ fn xf(i: u32, p: vec4f) -> vec3f { return p * b.m[i]; }
 }
 @fragment fn fs(i: O, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
   let amount = b.ch[0].x;
-  let view = normalize(cam.eye.xyz - i.wp) * select(-1.0, 1.0, ff);
+  // [R bb_charge_ps30 vFace] the models wind the other way from WebGPU's default front face
+  let view = normalize(cam.eye.xyz - i.wp) * select(1.0, -1.0, ff);
   let nt = textureSample(tNormal, samp, i.uv);
   let ts = pow(nt.xyz, vec3f(1.0 / 2.2)) * 2.0 - 1.0;
   let dpx = dpdx(i.wp); let dpy = dpdy(i.wp); let dux = dpdx(i.uv); let duy = dpdy(i.uv);
@@ -446,7 +447,9 @@ fn xf(i: u32, p: vec4f) -> vec3f { return p * b.m[i]; }
   let alpha = max(dark, glow) * amount;
   let R = exp(log(fres) * b.ch[4].w) * b.ch[4].z;
   let col = glow * b.ch[1].rgb;
-  return vec4f(R * (b.ch[5].rgb - col) + col, R * (R - alpha) + alpha) * vec4f(amount, amount, amount, 1.0);
+  // [R bb_charge_ps30] the target is the backbuffer format, so the rim color, far past 1, clamps before it's blended
+  let a = saturate(R * (R - alpha) + alpha);
+  return vec4f((1.0 - min(R, 1.0)) * col * amount + saturate(R * b.ch[5].rgb) * a, a);
 }`;
 // Effects: particles and swing trails, premultiplied so additive and blended share one pipeline.
 const FX_WGSL = /* wgsl */`
@@ -1605,7 +1608,7 @@ struct O { @builtin(position) p: vec4f, @location(0) uv: vec2f };
       pass.setVertexBuffer(0, c.mesh.vb);
       pass.setIndexBuffer(c.mesh.ib, 'uint32');
       for (const s of c.mesh.subs) { if (s.hidden) continue; pass.setPipeline(s.cut ? this.pSkinCut : this.pSkin); pass.setBindGroup(1, s.bg); pass.drawIndexed(s.count, 1, s.start, 0, 0); }
-      if (c.charge > 0.001) {
+      if (c.charge > 0.001 || c.rim > 0) {
         pass.setPipeline(this.pCharge);
         for (const s of c.mesh.subs) if (s.chargeBg) { pass.setBindGroup(1, s.chargeBg); pass.drawIndexed(s.count, 1, s.start, 0, 0); }
       }
