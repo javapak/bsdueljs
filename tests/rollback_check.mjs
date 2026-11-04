@@ -7,7 +7,7 @@ import { GameData } from '../shared/gamedata.js';
 import { CharacterStore } from '../shared/assets.js';
 import { World, Player, Match, Cvars, IN, TICK } from '../shared/sim.js';
 import { saveState, loadState, hashState } from '../shared/simstate.js';
-import { RollbackSession, packInput } from '../shared/rollback.js';
+import { RollbackSession, packInput, encodePacket, decodePacket } from '../shared/rollback.js';
 const G = process.argv[2] + '/berimbau/';
 const cvars = new Cvars(JSON.parse(readFileSync(new URL('../shared/cvars_all.json', import.meta.url))));
 const data = await GameData.load(async (p) => readFileSync(G + p, 'latin1'), cvars);
@@ -106,7 +106,7 @@ for (const [chars, swords] of [[['knight', 'ryoku'], ['longsword', 'katana']], [
 /** A network with latency, jitter and loss, one way. Packets can overtake each other. */
 class Wire {
   constructor(latency, jitter, loss, seed, deliver) { Object.assign(this, { latency, jitter, loss, r: rng(seed), deliver }); this.q = []; this.now = 0; }
-  send(p) { if (this.r() >= this.loss) this.q.push({ at: this.now + this.latency + this.r() * this.jitter, p: JSON.parse(JSON.stringify(p)) }); }
+  send(p) { if (this.r() >= this.loss) this.q.push({ at: this.now + this.latency + this.r() * this.jitter, p: decodePacket(encodePacket(p)) }); }
   advance(dt) { this.now += dt; for (let i = this.q.length - 1; i >= 0; i--) if (this.q[i].at <= this.now) { this.deliver(this.q[i].p); this.q.splice(i, 1); } }
 }
 function peers({ ms = 40, jitter = 0, loss = 0, start = 0, seconds = 60, asym = 1, delay = 2 }) {

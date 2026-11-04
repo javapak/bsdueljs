@@ -63,6 +63,7 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `node tests/options_check.mjs "<install>"` | the per-fighter input options: double tap shuffle, attack + block grab, and the input buffer |
 | `node tests/detmath_check.mjs` | `shared/detmath.js` stays within 1-3 units in the last place of the engine's own functions, special values included, and uses only what IEEE 754 defines |
 | `node tests/rollback_check.mjs "<install>"` | save and restore lose nothing; fights that keep rewinding match straight runs bit for bit; two peers over simulated latency, jitter, loss and a late start agree, and match a replay of their inputs; the deepest rewind fits in a tick |
+| `node tests/p2p_check.mjs "<install>" [seconds] [ms] [loss]` | a real match over real WebRTC through the real relay, Chrome against Firefox with added lag and loss, no renderer: rollbacks happen and state hashes agree across engines |
 | `node tests/determinism_check.mjs "<install>"` | seeded fights replay identically in Node, Chrome and Firefox: the whole game state, bit for bit, every eighth tick. Names the first field that differs. What rollback rests on |
 | `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
 | `node tests/jiggle_check.mjs "<install>/berimbau"` | jiggle bones hold length and limits, settle the same at any frame rate, and reset after a gap |

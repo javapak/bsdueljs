@@ -10,6 +10,26 @@ const NEUTRAL = Object.freeze([0, 0, 0]);
  * Adding 0 turns -0 into 0: a sum with it can come out different in the last bit, and text formats like JSON drop the sign on the way over.
  */
 export const packInput = (i) => [i[0] | 0, Math.fround(i[1]) + 0, Math.fround(i[2]) + 0];
+/**
+ * @param {object} p A packet from a session.
+ * @returns {ArrayBuffer} It as bytes: 12 for each input. Binary keeps every bit of the angles.
+ */
+export function encodePacket(p) {
+  const n = p.inputs.length, out = new ArrayBuffer(28 + n * 12), v = new DataView(out);
+  v.setInt32(0, p.from, true); v.setInt32(4, n, true); v.setInt32(8, p.ack, true); v.setInt32(12, p.frame, true); v.setInt32(16, p.adv, true);
+  v.setInt32(20, p.hash ? p.hash[0] : -1, true); v.setUint32(24, p.hash ? p.hash[1] : 0, true);
+  p.inputs.forEach((inp, i) => { const o = 28 + i * 12; v.setInt32(o, inp[0], true); v.setFloat32(o + 4, inp[1], true); v.setFloat32(o + 8, inp[2], true); });
+  return out;
+}
+/**
+ * @param {ArrayBuffer} b From encodePacket.
+ * @returns {object} The packet.
+ */
+export function decodePacket(b) {
+  const v = new DataView(b), n = v.getInt32(4, true), inputs = new Array(n), hf = v.getInt32(20, true);
+  for (let i = 0; i < n; i++) { const o = 28 + i * 12; inputs[i] = [v.getInt32(o, true), v.getFloat32(o + 4, true), v.getFloat32(o + 8, true)]; }
+  return { from: v.getInt32(0, true), inputs, ack: v.getInt32(8, true), frame: v.getInt32(12, true), adv: v.getInt32(16, true), hash: hf >= 0 ? [hf, v.getUint32(24, true)] : null };
+}
 const sameInput = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 // Frames between state hashes: about one second
 const HASH_EVERY = 64;
