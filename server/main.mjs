@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Duel dedicated server: authoritative 66-tick sim, WebSocket protocol, and HTTP for the browser
+// Duel dedicated server: authoritative 64-tick sim, WebSocket protocol, and HTTP for the browser
 // client. Assets are read from the player's own install and never leave this machine's HTTP scope.
 // Usage: node server/main.mjs [--game "<Blade Symphony dir>"] [--map duel_temple] [--port 27015] [--bot]
 import http from 'node:http';
