@@ -11,7 +11,7 @@ import { parseArgs } from 'node:util';
 import { BSP } from '../shared/bsp.js';
 import { GameData } from '../shared/gamedata.js';
 import { CharacterStore } from '../shared/assets.js';
-import { World, Player, Cvars, TICK } from '../shared/sim.js';
+import { World, Player, Cvars, TICK, unpackViewAngle } from '../shared/sim.js';
 import { makeBotBrain } from '../shared/bot.js';
 import { buildSnapshot } from '../shared/snapshot.js';
 import { acceptWebSocket } from './ws.mjs';
@@ -166,6 +166,8 @@ function onMessage(c, m) {
     if (Number.isFinite(m.e)) c.player.ping = Math.max(0, Math.round((world.time - m.e) * 1000));
     if (Number.isFinite(m.y)) c.player.viewYaw = m.y;
     if (Number.isFinite(m.p)) c.player.pitch = Math.max(-89, Math.min(89, m.p));
+    // where the camera looks, which throws home around
+    if (Number.isInteger(m.cp) && Number.isInteger(m.cy)) c.player.viewCone = [unpackViewAngle(m.cp), unpackViewAngle(m.cy)];
     c.lastSeq = m.s;
   } else if (m.t === 'loadout' && c.player) {
     // [I] from the customization screen in a match: takes effect when the next round starts

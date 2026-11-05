@@ -1,7 +1,7 @@
 // Browser client: input -> server, snapshots -> interpolated rendering.
 import { BSP } from '/shared/bsp.js';
 import { Model, Character } from '/shared/mdl.js';
-import { IN, animLayers } from '/shared/sim.js';
+import { IN, animLayers, packViewAngle } from '/shared/sim.js';
 import { entityMatrix, matMul, rigidInverse, angleVectors, DEG, angleDiff, angleNorm } from '/shared/mathx.js';
 import { Renderer } from './render.js';
 import { FX } from './fx.js';
@@ -265,7 +265,7 @@ function closePause() { pauseMenu?.show(false); if (!spectating && document.poin
 addEventListener('contextmenu', (e) => e.preventDefault());
 let seq = 0;
 /**
- * @returns {number[]} This player's buttons, yaw and pitch right now.
+ * @returns {number[]} This player's buttons, aim yaw and pitch right now, then the camera's pitch and yaw packed as the game sends them.
  */
 function readInput() {
   let b = 0;
@@ -276,13 +276,13 @@ function readInput() {
   if (customize.open || spectating || pauseMenu?.open) b = 0;
   if (window.duelDebug.forceButtons !== undefined) b = window.duelDebug.forceButtons;
   if (window.duelDebug.forceYaw !== undefined) camYaw = window.duelDebug.forceYaw;
-  const [aimPitch, aimYaw] = thirdPerson.aim(camView ?? [camPitch, camYaw, 0]);
-  return [b, +angleNorm(aimYaw).toFixed(2), +aimPitch.toFixed(2)];
+  const view = camView ?? [camPitch, camYaw, 0], [aimPitch, aimYaw] = thirdPerson.aim(view);
+  return [b, +angleNorm(aimYaw).toFixed(2), +aimPitch.toFixed(2), packViewAngle(view[0]), packViewAngle(view[1])];
 }
 setInterval(() => {
   if (ws?.readyState !== 1 || myId == null) return;
-  const [b, y, p] = readInput();
-  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y, p, e: snaps.at(-1)?.time }));
+  const [b, y, p, cp, cy] = readInput();
+  ws.send(JSON.stringify({ t: 'cmd', s: ++seq, b, y, p, cp, cy, e: snaps.at(-1)?.time }));
 }, 15);
 
 pauseMenu = await createPauseMenu({

@@ -2,25 +2,26 @@
 // arrive, and a wrong guess rewinds to that frame and plays forward again. Nothing here knows about sockets; it takes a `send`
 // function and is handed packets, so tests can run it through any network they like.
 import { saveState, loadState, hashState } from './simstate.js';
+import { packViewAngle, unpackViewAngle } from './sim.js';
 
-const NEUTRAL = Object.freeze([0, 0, 0]);
+const NEUTRAL = Object.freeze([0, 0, 0, 0, 0]);
 /**
- * @param {number[]} i Buttons, yaw and pitch.
+ * @param {number[]} i Buttons, yaw and pitch, then the camera's pitch and yaw packed by packViewAngle. Without those, the camera is taken to be the aim.
  * @returns {number[]} The form both peers simulate: whole buttons and single precision angles, so what's sent is exactly what's used.
  * Adding 0 turns -0 into 0: a sum with it can come out different in the last bit, and text formats like JSON drop the sign on the way over.
  */
-export const packInput = (i) => [i[0] | 0, Math.fround(i[1]) + 0, Math.fround(i[2]) + 0];
+export const packInput = (i) => [i[0] | 0, Math.fround(i[1]) + 0, Math.fround(i[2]) + 0, (i[3] ?? packViewAngle(i[2])) | 0, (i[4] ?? packViewAngle(i[1])) | 0];
 /**
  * @param {object} p A packet from a session.
- * @returns {ArrayBuffer} It as bytes: 12 for each input. Binary keeps every bit of the angles. Any loadouts follow as JSON, which is rare.
+ * @returns {ArrayBuffer} It as bytes: 16 for each input. Binary keeps every bit of the angles. Any loadouts follow as JSON, which is rare.
  */
 export function encodePacket(p) {
   const n = p.inputs.length, kit = p.loadouts?.length ? new TextEncoder().encode(JSON.stringify(p.loadouts)) : null;
-  const out = new ArrayBuffer(28 + n * 12 + (kit?.length ?? 0)), v = new DataView(out);
-  if (kit) new Uint8Array(out).set(kit, 28 + n * 12);
+  const out = new ArrayBuffer(28 + n * 16 + (kit?.length ?? 0)), v = new DataView(out);
+  if (kit) new Uint8Array(out).set(kit, 28 + n * 16);
   v.setInt32(0, p.from, true); v.setInt32(4, n, true); v.setInt32(8, p.ack, true); v.setInt32(12, p.frame, true); v.setInt32(16, p.adv, true);
   v.setInt32(20, p.hash ? p.hash[0] : -1, true); v.setUint32(24, p.hash ? p.hash[1] : 0, true);
-  p.inputs.forEach((inp, i) => { const o = 28 + i * 12; v.setInt32(o, inp[0], true); v.setFloat32(o + 4, inp[1], true); v.setFloat32(o + 8, inp[2], true); });
+  p.inputs.forEach((inp, i) => { const o = 28 + i * 16; v.setInt32(o, inp[0], true); v.setFloat32(o + 4, inp[1], true); v.setFloat32(o + 8, inp[2], true); v.setInt16(o + 12, inp[3], true); v.setInt16(o + 14, inp[4], true); });
   return out;
 }
 /**
@@ -29,11 +30,11 @@ export function encodePacket(p) {
  */
 export function decodePacket(b) {
   const v = new DataView(b), n = v.getInt32(4, true), inputs = new Array(n), hf = v.getInt32(20, true);
-  for (let i = 0; i < n; i++) { const o = 28 + i * 12; inputs[i] = [v.getInt32(o, true), v.getFloat32(o + 4, true), v.getFloat32(o + 8, true)]; }
-  const kit = b.byteLength > 28 + n * 12 ? JSON.parse(new TextDecoder().decode(new Uint8Array(b, 28 + n * 12))) : [];
+  for (let i = 0; i < n; i++) { const o = 28 + i * 16; inputs[i] = [v.getInt32(o, true), v.getFloat32(o + 4, true), v.getFloat32(o + 8, true), v.getInt16(o + 12, true), v.getInt16(o + 14, true)]; }
+  const kit = b.byteLength > 28 + n * 16 ? JSON.parse(new TextDecoder().decode(new Uint8Array(b, 28 + n * 16))) : [];
   return { from: v.getInt32(0, true), inputs, ack: v.getInt32(8, true), frame: v.getInt32(12, true), adv: v.getInt32(16, true), hash: hf >= 0 ? [hf, v.getUint32(24, true)] : null, loadouts: kit };
 }
-const sameInput = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+const sameInput = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3] && a[4] === b[4];
 // Frames between state hashes: about one second
 const HASH_EVERY = 64;
 
@@ -187,6 +188,7 @@ export class RollbackSession {
     for (let i = 0; i < 2; i++) {
       const p = this.fighters[i], inp = i === this.them ? guess : this.inputFor(i, f);
       [p.buttons, p.viewYaw, p.pitch] = inp;
+      p.viewCone = [unpackViewAngle(inp[3]), unpackViewAngle(inp[4])];
       const kit = this.loadouts[i].get(f);
       if (kit) p.nextSetLoadout = this.dress(kit);
     }

@@ -37,7 +37,8 @@ try {
   const state = (pg) => pg.evaluate(() => { const m = window.duelDebug.p2p, w = m.world, s = m.session; return { frame: s.frame, hp: w.players.map((p) => p.health), duel: w.duels[0].state, round: w.duels[0].round, wins: w.duels[0].wins, stats: s.stats, desynced: s.desynced, hashes: [...s.hashes], ch: w.players.map((p) => p.character), id: m.myId, fps: window.duelDebug.fps, act: w.players.map((p) => p.act?.name ?? null), o: w.players.map((p) => p.origin.map((x) => +x.toFixed(1))) }; });
   for (const pg of pages) await pg.waitForFunction(() => window.duelDebug.state?.duel?.s === 'fight', { timeout: 60000 });
   const s0 = await Promise.all(pages.map(state));
-  check(s0[0].ch.join() === 'knight,ryoku' && s0[1].ch.join() === 'knight,ryoku', `each sees the same two fighters in the same seats: ${s0[0].ch}, ${s0[1].ch}`);
+  // seat 0 is whoever reached the relay first, so either order is right as long as both agree
+  check(s0[0].ch.join() === s0[1].ch.join() && [...s0[0].ch].sort().join() === 'knight,ryoku', `each sees the same two fighters in the same seats: ${s0[0].ch}, ${s0[1].ch}`);
   check(s0[0].id !== s0[1].id, 'each plays a different one');
   await pages[0].screenshot({ path: `${out}_a_fight.png` });
   await pages[1].screenshot({ path: `${out}_b_fight.png` });

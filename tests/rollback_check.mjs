@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { BSP } from '../shared/bsp.js';
 import { GameData } from '../shared/gamedata.js';
 import { CharacterStore } from '../shared/assets.js';
-import { World, Player, Match, Cvars, IN, TICK } from '../shared/sim.js';
+import { World, Player, Match, Cvars, IN, TICK, unpackViewAngle } from '../shared/sim.js';
 import { saveState, loadState, hashState } from '../shared/simstate.js';
 import { RollbackSession, packInput, encodePacket, decodePacket } from '../shared/rollback.js';
 const G = process.argv[2] + '/berimbau/';
@@ -40,7 +40,8 @@ function match(chars = ['knight', 'ryoku'], swords = ['longsword', 'katana']) {
   w.duels[0].seat(P);
   return { w, P };
 }
-const apply = (p, inp) => { [p.buttons, p.viewYaw, p.pitch] = inp; };
+// as a session applies an input, the camera's angles included when the input has them
+const apply = (p, inp) => { [p.buttons, p.viewYaw, p.pitch] = inp; if (inp.length > 3) p.viewCone = [unpackViewAngle(inp[3]), unpackViewAngle(inp[4])]; };
 
 // --- 1. the state is complete: saving, wrecking it and restoring puts back every bit
 {
@@ -184,7 +185,7 @@ for (const net of [
   for (; frame <= last; frame++) {
     const h = r0.sa.hashes.get(frame);
     if (h !== undefined) { compared++; if (hashState(saveState(w)) !== h) differ++; }
-    apply(P[0], seen[0][frame] ?? [0, 0, 0]); apply(P[1], seen[1][frame] ?? [0, 0, 0]); w.step(); w.events.length = 0;
+    apply(P[0], seen[0][frame] ?? [0, 0, 0, 0, 0]); apply(P[1], seen[1][frame] ?? [0, 0, 0, 0, 0]); w.step(); w.events.length = 0;
   }
   check(compared > 20 && differ === 0, `the rolled back game matches a straight replay of the same inputs: ${compared} hashes, ${differ} differ`);
 }

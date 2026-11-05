@@ -18,6 +18,9 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(relay);
     let pc = null, pending = [], remoteSet = false, info = null, settled = false, timer = null;
+    // The kinds of address each side put forward, for saying why it didn't connect. A hidden local address ends in .local.
+    const offered = new Set(), received = new Set();
+    const kind = (c) => { const p = String(c?.candidate ?? '').split(' '); return `${p[p.indexOf('typ') + 1] || '?'}${/\.local$/.test(p[4] ?? '') ? ' (hidden)' : ''}`; };
     const signal = (data) => ws.send(JSON.stringify({ t: 'signal', data }));
     const fail = (why) => {
       if (settled) return;
@@ -28,7 +31,8 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
     };
     // Both see the reason, since the one that gives up first leaving looks like them walking away to the other
     const noRoute = () => {
-      const why = `could not connect directly to the other player${iceServers.length ? '' : '. On different networks, both links need &stun=stun:<host>:<port>'}`;
+      const list = (s) => [...s].join(', ') || 'none';
+      const why = `could not connect directly to the other player (one side offered: ${list(offered)}; received: ${list(received)})${iceServers.length ? '' : '. No STUN server is set, so this only works if the browsers can reach each other on a local network or VPN'}`;
       if (ws.readyState === 1) signal({ failed: why });
       fail(why);
     };
@@ -56,6 +60,7 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
         pending = [];
         if (d.sdp.type === 'offer') { await pc.setLocalDescription(await pc.createAnswer()); signal({ sdp: pc.localDescription }); }
       } else if (d.ice) {
+        received.add(kind(d.ice));
         if (remoteSet) await pc.addIceCandidate(d.ice); else pending.push(d.ice);
       }
     };
@@ -75,7 +80,7 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
         pc = new RTCPeerConnection({ iceServers });
         // ICE only reports failure if it had an address to try. With none, such as a hidden local address from another network, it waits forever.
         timer = setTimeout(noRoute, CONNECT_MS);
-        pc.onicecandidate = (ev) => { if (ev.candidate) signal({ ice: ev.candidate }); };
+        pc.onicecandidate = (ev) => { if (ev.candidate) { offered.add(kind(ev.candidate)); signal({ ice: ev.candidate }); } };
         pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') noRoute(); };
         try {
           if (m.seat === 0) {

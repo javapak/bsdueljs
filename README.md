@@ -123,7 +123,7 @@ Two people play a duel directly, with no server in the fight. Each browser runs 
     node p2p/relay.mjs                                           # one of you, or anywhere both can reach; it only introduces you
     node server/main.mjs --game "<install>"                      # each player, from their own install
 
-Then each opens `http://localhost:27015/?p2p=<room>&relay=ws://<relay address>:27016` with the same room name. Across the internet, add `&stun=stun:<host>:<port>` to both links: without it the browser only offers addresses that work on its own network, and after 20 seconds the client says it couldn't connect. The connection is direct, so each player learns the other's IP address.
+Then each opens `http://localhost:27015/?p2p=<room>&relay=ws://<relay address>:27016` with the same room name. Across the internet, add `&stun=stun:<host>:<port>` to both links: without it the browser only offers addresses that work on its own network or VPN. If it can't connect, the client says so within 20 seconds and lists the kinds of address the two sides exchanged. The connection is direct, so each player learns the other's IP address.
 
 Input delay defaults to 2 ticks (31 ms) and the rollback limit to 8 (125 ms), about the same as Slippi's 2 frames and, from memory, 7 frames at 60 fps. `&delay=` sets a player's own delay, 0 to 8, and `&rollback=` their own limit, 1 to 16; the two players needn't match. Past the limit the game holds still rather than making a larger correction. The client draws the newest tick with no blending, so fighters move at 64 updates a second on any display, while the camera follows each drawn frame.
 

@@ -28,6 +28,24 @@ import { MASK_PLAYERSOLID, SURF_SKY, SURF_SKY2D } from './bsp.js';
  * @property {Array} [bladeRing] The last 20 blade samples, newest last.
  */
 export const TICK = 1 / 64;
+/**
+ * [R client 1802b1d92] The camera's view goes to the server beside the aim, one angle to 16 bits: normalized to -180..180, over 180, times 32767.
+ * @param {number} a An angle in degrees.
+ * @returns {number} It packed.
+ */
+export function packViewAngle(a) {
+  let n = Math.fround(a % 360);
+  if (n > 180) n = Math.fround(n - 360);
+  if (n < -180) n = Math.fround(n + 360);
+  const v = Math.fround(Math.fround(n * Math.fround(1 / 180)) * 32767);
+  return Math.trunc(Math.max(-32767, Math.min(32767, v)));
+}
+/**
+ * [R 18037aeed] And back, as the server reads it: 0 to 360.
+ * @param {number} s A packed angle.
+ * @returns {number} Degrees.
+ */
+export const unpackViewAngle = (s) => (Math.trunc(Math.fround(s * 1.000030517578125)) & 0xffff) * 0.0054931640625;
 // [R 18037b1eb] the player reset sets the entity gravity field to 3, multiplying sv_gravity
 const PLAYER_GRAVITY_SCALE = 3;
 // [R 18037b470] these presses are remembered; a new one replaces the old, for the client's bb_ibt [R 180333c79].
@@ -772,7 +790,9 @@ export class World {
    */
   starTarget(p) {
     const cv = this.cv, eye = [p.origin[0], p.origin[1], p.origin[2] + 36 + STAR_TARGET_EYE];
-    const { forward: f, right: r, up: u } = angleVectors([p.pitch, p.viewYaw, 0]);
+    // [R 180379af0] the cone is around where the camera looks, not the aim, which sits bb_cam_thirdperson_pitch_viewoffset above it. Bots and
+    // tests that send no camera use the aim.
+    const { forward: f, right: r, up: u } = angleVectors(p.viewCone ? [p.viewCone[0], p.viewCone[1], 0] : [p.pitch, p.viewYaw, 0]);
     let best = null, reach = cv.f('bb_throwable_target_distance_max'), minR = cv.f('bb_throwable_target_dot_min_right'), minU = cv.f('bb_throwable_target_dot_min_up');
     for (const q of this.players) {
       if (!this.starEnemy(q, p.id, p.arena)) continue;
