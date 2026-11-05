@@ -170,11 +170,11 @@ function onMessage(c, m) {
     if (Number.isInteger(m.cp) && Number.isInteger(m.cy)) c.player.viewCone = [unpackViewAngle(m.cp), unpackViewAngle(m.cy)];
     c.lastSeq = m.s;
   } else if (m.t === 'loadout' && c.player) {
-    // [I] from the customization screen in a match: takes effect when the next round starts
+    // [I] from the customization screen in a match: takes effect when the next set starts
     const ch = data.characters[m.character] ? m.character : c.player.character, item = data.swordItems.find((i) => i.id === m.item);
     const next = { character: ch, look: validLook(m.look, ch), pickColor: validColor(m.color), ...(item ? { sword: item.type, swordItem: item.id } : {}) };
-    // In the world it waits for the next round; watching, it applies now
-    if (world.players.includes(c.player)) c.player.nextLoadout = next; else Object.assign(c.player, next);
+    // In the world it waits for the next set; watching, it applies now
+    if (world.players.includes(c.player)) c.player.nextSetLoadout = next; else Object.assign(c.player, next);
   } else if (m.t === 'character' && c.player && data.characters[m.character]) {
     c.player.character = m.character;
   }

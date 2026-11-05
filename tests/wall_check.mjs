@@ -167,5 +167,15 @@ const open = (w, a, b, gap) => {
   check('and only once', a.nextLoadout === null, a.nextLoadout);
 }
 
+{ // one chosen for the next set, as the customization screen does now, sits out the rounds left and applies when the set starts
+  const { w, a, b } = fresh();
+  a.nextSetLoadout = { character: 'knight', sword: 'katana', swordItem: 1234, look: [65] };
+  w.duel.startRound(false);
+  check('a new round of the same set changes nothing', a.character === 'ryoku' && a.swordItem !== 1234, a.character);
+  w.duel.beginMatch([a, b]);
+  check('the next set starts in it', a.character === 'knight' && a.sword === 'katana' && a.swordItem === 1234 && a.look[0] === 65, [a.character, a.sword, a.swordItem, a.look]);
+  check('and it is used up', a.nextSetLoadout === null && a.nextLoadout === null, [a.nextSetLoadout, a.nextLoadout]);
+}
+
 console.log(`${pass}/${pass + fail} passed`);
 process.exit(fail ? 1 : 0);

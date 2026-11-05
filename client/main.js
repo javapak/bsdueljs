@@ -382,7 +382,8 @@ window.duelDebug.instances = () => instances;
 function swordParts(p) {
   const inst = instances.get(p.id);
   if (!inst) return null;
-  if (inst.swordItem !== p.it) { inst.swordItem = p.it; inst.swordParts = null; loadSwordParts(p.it).then((list) => { if (inst.swordItem === p.it) inst.swordParts = list.map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true, held: true })); }); }
+  // the old sword stays until the new one has loaded, so changing it doesn't blink
+  if (inst.swordItem !== p.it) { inst.swordItem = p.it; loadSwordParts(p.it).then((list) => { if (inst.swordItem === p.it) inst.swordParts = list.map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true, held: true })); }); }
   return inst.swordParts;
 }
 /**
@@ -415,7 +416,9 @@ function lookParts(p, ci) {
   const inst = instances.get(p.id);
   const ids = p.lk ?? [], key = ids.join();
   if (inst.lookKey !== key) {
-    inst.lookKey = key; inst.look = []; inst.body = null;
+    // What's on stays until the new set has loaded, so picking an item doesn't blink the others. Another character's wouldn't fit, so those go now.
+    if (inst.lookChar !== p.c) { inst.look = []; inst.body = null; }
+    inst.lookKey = key; inst.lookChar = p.c;
     const items = ids.map((id) => info.lookItems.find((i) => i.id === id)).filter(Boolean);
     const body = new Set(items.map((i) => i.body).filter(Boolean)), skin = items.find((i) => i.kind === 'skin')?.skin ?? 0;
     R.loadBody(info.characters[p.c].model, skin, body).then((mesh) => { if (inst.lookKey === key) inst.body = mesh; });
@@ -423,7 +426,7 @@ function lookParts(p, ci) {
       if (inst.lookKey === key) inst.look = list.filter(Boolean).map((mesh) => ({ mesh, bones: R.newBoneBuffer(), shown: true }));
     });
   }
-  return inst.look;
+  return inst.look ?? [];
 }
 // Thrown weapons: the type's model at its own size (the scripts' "scale" key is never read by the game), playing the
 // model's ACT_FLY tumble at the snapshot's position. [I] +X points along the flight; the game's code for that wasn't
@@ -499,7 +502,7 @@ function frameCharacter(p, ci, world) {
   return { bones: inst.bones, mesh: inst.body ?? ci.mesh, world: bones };
 }
 /**
- * Values the charge proxies hand bb_charge, from the character's material
+ * Values the charge proxies hand bb_charge, from the material of what's drawn: the body, or something the fighter wears
  * [R client 1802b0e4b] during the dash's cooldown, after the dash itself, a rim beats on the fighter: $CHARGEEXTRARIMLIGHT*, its color 255 79 79
  * [I] the amplitude: 1.5 instead when a check on the game mode passes, which wasn't identified
  * @param {object} p A fighter from the snapshot.
@@ -599,8 +602,9 @@ function wheelPart(slot, id) {
   let e = wheelParts.get(slot);
   if (!e) { e = { part: null, id: null, bones: R.newBoneBuffer() }; wheelParts.set(slot, e); }
   if (e.id !== id) {
-    e.id = id; e.part = null;
-    loadSwordParts(id).then((list) => { if (e.id === id && list[0]) e.part = { mesh: list[0], bones: e.bones, shown: true }; });
+    // the slot keeps its sword until the next one has loaded, so scrolling doesn't blink
+    e.id = id;
+    loadSwordParts(id).then((list) => { if (e.id === id) e.part = list[0] ? { mesh: list[0], bones: e.bones, shown: true } : null; });
   }
   return e.part;
 }
@@ -754,13 +758,16 @@ async function tick() {
       const st = fx.updatePlayer(p, ci.char, fc.world, ci.gripBone, color);
       setCharge(fc, st.charge, color, dashRim(p));
       characters.push(fc);
-      for (const part of lookParts(p, ci)) { R.attachTo(fc, part, ci.char); if (part.shown) attached.push(part); }
+      // [I] the charge proxy runs on each material the fighter wears, with that material's own values, so what they wear charges with them
+      // wherever its material has the pass
+      const charged = (part) => setCharge(part, st.charge, color, dashRim(p));
+      for (const part of lookParts(p, ci)) { R.attachTo(fc, part, ci.char); charged(part); if (part.shown) attached.push(part); }
       if (p.a?.th) {
         const kind = info.charThrowable[p.c], part = kind && starPart(`hand${p.id}`, kind), att = ci.char.root.attachments.find((x) => x.name === 'anim_attachment_LH');
         if (part && att) { holdStar(part, matMul(fc.world[att.bone], att.local), p.o); attached.push(part); }
       }
       const held = swordParts(p);
-      if (held) for (const part of held) { R.attachTo(fc, part, ci.char, swordState(p)); if (part.shown) attached.push(part); }
+      if (held) for (const part of held) { R.attachTo(fc, part, ci.char, swordState(p)); charged(part); if (part.shown) attached.push(part); }
       else bladeTris(tris, fc.world, ci.gripBone, p.a?.ph === 'swing' ? [1, 0.95, 0.7, 1] : [0.85, 0.87, 0.92, 1]);
     }
     starsFrame(cur, renderTime, attached);
@@ -856,7 +863,7 @@ customize.onConfirm(() => {
   }
   if (started) {
     ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
-    if (!spectating) banner('Loadout changes next round');
+    if (!spectating) banner('Loadout changes next set');
     closeCustomize();
     return;
   }
