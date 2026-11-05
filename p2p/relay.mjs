@@ -18,7 +18,7 @@ export function createRelay() {
     const room = c.room && rooms.get(c.room);
     if (!room) return;
     room.delete(c);
-    for (const other of room) other.send({ t: 'gone' });
+    if (!c.linked) for (const other of room) other.send({ t: 'gone' });
     if (!room.size) rooms.delete(c.room);
     c.room = null;
   };
@@ -44,6 +44,9 @@ export function createRelay() {
       } else c.send({ t: 'waiting' });
     } else if (m.t === 'signal' && c.room) {
       for (const other of rooms.get(c.room) ?? []) if (other !== c) other.send({ t: 'signal', data: m.data });
+    } else if (m.t === 'linked') {
+      // Connected to the other peer, so it's done here and its going says nothing about the fight
+      c.linked = true;
     }
   };
   return (req, socket) => {

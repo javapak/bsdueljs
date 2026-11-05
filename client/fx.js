@@ -184,6 +184,28 @@ export class FX {
    * @param {number} gripBone sword_grip's index.
    * @param {number[]} color Trail color.
    */
+  /**
+   * A flourish's own AE_CL_CREATE_PARTICLE_EFFECT events, as "name follow_attachment attachment", when its cycle passes them. The heavy flourish's
+   * rope of hearts is one, on every character, and the balanced flourish's kiss on the female models.
+   * @param {object} s This fighter's effect state.
+   * @param {object} p The fighter from the snapshot.
+   * @param {object} char Their character.
+   */
+  flourishEffects(s, p, char) {
+    const anim = p.an?.b, was = s.flourish, cycle = p.an?.bc ?? 0;
+    s.flourish = /_FLOURISH$/.test(anim ?? '') ? { anim, cycle } : null;
+    if (!s.flourish) return;
+    const seq = char.seqForActivity(anim);
+    if (!seq) return;
+    const from = was?.anim === anim && cycle >= was.cycle ? was.cycle : -1;
+    for (const e of seq.model.seqEvents(seq)) {
+      if (e.name !== 'AE_CL_CREATE_PARTICLE_EFFECT' || e.cycle <= from || e.cycle > cycle) continue;
+      const [name, , attachment] = String(e.options).trim().split(/\s+/);
+      const point = () => { const m = char.attachmentWorld(attachment, s.world); return makeCP(m ? attPos(m) : center(s.p.o)); };
+      this.spawn(name, point(), (h) => { h.inst.setCP(0, Object.assign(point(), { entity: p.id })); });
+    }
+  }
+
   updatePlayer(p, char, world, gripBone, color) {
     let s = this.players.get(p.id);
     if (!s) { s = { trail: [], fade: 1, charge: 0, parry: null }; this.players.set(p.id, s); }
@@ -191,6 +213,7 @@ export class FX {
     s.bonePoints = world.map((m) => [m[3], m[7], m[11]]);
     const g = gripBone !== undefined ? world[gripBone] : null;
     s.grip = g;
+    this.flourishEffects(s, p, char);
     const a = p.a;
     // [1803f1710] the trail runs from 5 units behind the grip to the blade length, while the swing's
     // tracer script is running; ring length is per frame here rather than per .bst sample

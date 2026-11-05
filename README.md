@@ -60,12 +60,14 @@ E throw, 4 sheathe, B bow, C flourish, V taunt, T sit, R join or leave the queue
 | `node tests/sword_check.mjs "<install>"` | every sword in the catalog lies along its grip when posed as it's held |
 | `node tests/dash_check.mjs "<install>"` | the charge dash: when it's allowed, what it does, and the vulnerable time after it |
 | `node tests/preview_check.mjs "<install>"` | the attack preview: the attack it names, its path, fades and target highlight |
+| `node tests/star_check.mjs "<install>"` | thrown weapons against `server.dll`: where they leave from, homing and when it lets go, the lead, flying through player clips and people outside the match, blades and other throws stopping them, and every reaction |
 | `node tests/wall_check.mjs "<install>"` | wall run, slide, wall jump and run limit, plus throwables: timing, hits, blocks, cancel and delay |
 | `node tests/options_check.mjs "<install>"` | the per-fighter input options: double tap shuffle, attack + block grab, and the input buffer |
 | `node tests/detmath_check.mjs` | `shared/detmath.js` stays within 1-3 units in the last place of the engine's own functions, special values included, and uses only what IEEE 754 defines |
 | `node tests/rollback_check.mjs "<install>"` | save and restore lose nothing; fights that keep rewinding match straight runs bit for bit; two peers over simulated latency, jitter, loss and a late start agree, and match a replay of their inputs; the deepest rewind fits in a tick |
 | `node tests/p2p_check.mjs "<install>" [seconds] [ms] [loss]` | a real match over real WebRTC through the real relay, Chrome against Firefox with added lag and loss, no renderer: rollbacks happen and state hashes agree across engines |
 | `PWDIR=<playwright dir> node tests/p2p_match.mjs "<install>" <prefix>` | two full clients with the renderer find each other through the relay and fight with real key and mouse events: same fight, no desync, no page errors |
+| `PWDIR=<playwright dir> node tests/peer_check.mjs` | the handshake on a bad network, in real browsers through the real relay: it always ends by connecting or saying why not, and one peer connecting first doesn't end it for the other |
 | `node tests/hosted_check.mjs "<install>"` | `--hosted`: nothing without the token, only the folders the client reads with it, encoded path tricks refused, relay behind the token too |
 | `node tests/determinism_check.mjs "<install>"` | seeded fights replay identically in Node, Chrome and Firefox: the whole game state, bit for bit, every eighth tick. Names the first field that differs. What rollback rests on |
 | `node tests/gesture_check.mjs "<install>"` | bow, flourish, taunt, sit and sheathe: what starts them, their timing and lockouts, and that the hand ends a sheathe at the attachment the sword moves to |
@@ -121,7 +123,7 @@ Two people play a duel directly, with no server in the fight. Each browser runs 
     node p2p/relay.mjs                                           # one of you, or anywhere both can reach; it only introduces you
     node server/main.mjs --game "<install>"                      # each player, from their own install
 
-Then each opens `http://localhost:27015/?p2p=<room>&relay=ws://<relay address>:27016` with the same room name. Across the internet, add `&stun=stun:<host>:<port>`. The connection is direct, so each player learns the other's IP address.
+Then each opens `http://localhost:27015/?p2p=<room>&relay=ws://<relay address>:27016` with the same room name. Across the internet, add `&stun=stun:<host>:<port>` to both links: without it the browser only offers addresses that work on its own network, and after 20 seconds the client says it couldn't connect. The connection is direct, so each player learns the other's IP address.
 
 Input delay defaults to 2 ticks (31 ms) and the rollback limit to 8 (125 ms), about the same as Slippi's 2 frames and, from memory, 7 frames at 60 fps. `&delay=` sets a player's own delay, 0 to 8, and `&rollback=` their own limit, 1 to 16; the two players needn't match. Past the limit the game holds still rather than making a larger correction. The client draws the newest tick with no blending, so fighters move at 64 updates a second on any display, while the camera follows each drawn frame.
 
@@ -129,7 +131,7 @@ The relay refuses to pair people whose game files or sim code differ, since thos
 
 **Settled by test:** Node, Chrome and Firefox replay fights identically; save and restore lose nothing; Chrome against Firefox over real WebRTC with added lag and loss agree on every state hash; two full clients fight each other. **Not tested:** real networks (everything so far ran on one machine, with Chrome's mDNS hiding switched off and Firefox's equivalent too, so ordinary browsers on a LAN may behave differently), Safari, ARM CPUs, maps other than duel_temple, wall moves in a rollback, and Firefox with the renderer.
 
-**Not done:** a hit taken back by a rollback has already played its sound and sparks, and nothing retracts them, though `takeEvents` reports it. A desync is detected and reported but not repaired. There's no TURN, so some networks can't connect. Loadouts and input options are fixed when the match starts. A match repeats until someone leaves, with no lobby. The other player's tab in the background holds up the game after a quarter of a second.
+**Not done:** a hit taken back by a rollback has already played its sound and sparks, and nothing retracts them, though `takeEvents` reports it. A desync is detected and reported but not repaired. There's no TURN, so some networks can't connect. Input options are fixed when the match starts; a loadout can be changed any time and takes effect at the next set. A match repeats until someone leaves, with no lobby. The other player's tab in the background holds up the game after a quarter of a second.
 
 ### Hosting a private test
 
@@ -184,7 +186,7 @@ charge and swing flow, tracer sampling and its clock, blade pose (move params, p
 
 **Charge dash:** roll while charging an attack past tier 2 on the ground dashes instead (`AirDash`), dropping the charge. It ignores the roll's cooldown, and has its own of `bb_dash_delay`, 3.25s. For all of that you take `bb_dash_damage_multiplier`, 1.5x, from swords, grabs and throwables, can't block throwables, and a rim beats on you (`$CHARGEEXTRARIMLIGHT*`). Its color is 255 79 79, far past 1, so on the backbuffer format it clamps to a pale rim [I: not compared with live]. Its strength is 0.75 or 1.5 by a game mode check that wasn't identified [I: 0.75].
 
-**Throwables:** `E` throws the character's type from `scripts/throwabletypes.txt`. Flight, homing, damage and blocks follow `server.dll`; the star's lead on a moving target is a simple estimate, and blades don't deflect it in the air yet (`bounds_tracer`). It plays the model's own `ACT_FLY` tumble at the model's size, since the game never reads the script's `scale` key. That its +X points along the flight is inferred, and decals aren't drawn.
+**Throwables:** `E` throws the character's type from `scripts/throwabletypes.txt`. Flight, homing, damage and blocks follow `server.dll`, including the exact lead on a moving target, letting go of a target it has passed, enemy blades batting it down (`bounds_tracer`) and two people's throws knocking each other out. Only the two people in the match can be touched or homed on, so it flies through anyone else, and it stops on what's solid, not on player clips. It lasts until it hits something. Not drawn yet: what happens after it lands (sticking in the world or a fighter, a blocked one bouncing off, for `bb_throwable_life_duration`), the flinch a charging or guarding fighter plays. It plays the model's own `ACT_FLY` tumble at the model's size, since the game never reads the script's `scale` key. That its +X points along the flight is inferred, and decals aren't drawn.
 
 **Gestures:** bow, flourish, taunt and sit follow `server.dll`: they start once no lock is running and repeat while held, flourish and taunt play the stance's animation, and sitting holds the sit down's last frame until a move key or one of the buttons the game lists (not roll, shuffle or throw, which act from the seat as they would from standing). Bow, flourish and taunt lock movement and turning. Taunt and bow leave a sword sheathed; flourish draws it at once.
 

@@ -1,6 +1,9 @@
 // Connects to the other player, through the relay only until there's a direct WebRTC data channel. That channel is unordered with no
 // retransmits, which suits inputs: a lost packet is covered by the next, and waiting for it would only add delay.
 
+// How long to try for. Longer than the 15 seconds a browser takes to report that the addresses it tried didn't answer, so that gets to say so first.
+const CONNECT_MS = 20000;
+
 /**
  * @param {object} o Options.
  * @param {string} o.relay The relay's WebSocket address.
@@ -14,12 +17,28 @@
 export function connectPeer({ relay, room, build, hello = null, iceServers = [], onStatus = () => {} }) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(relay);
-    let pc = null, pending = [], remoteSet = false, info = null;
+    let pc = null, pending = [], remoteSet = false, info = null, settled = false, timer = null;
     const signal = (data) => ws.send(JSON.stringify({ t: 'signal', data }));
-    const fail = (why) => { try { ws.close(); pc?.close(); } catch { /* already gone */ } reject(new Error(why)); };
+    const fail = (why) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(); pc?.close(); } catch { /* already gone */ }
+      reject(new Error(why));
+    };
+    // Both see the reason, since the one that gives up first leaving looks like them walking away to the other
+    const noRoute = () => {
+      const why = `could not connect directly to the other player${iceServers.length ? '' : '. On different networks, both links need &stun=stun:<host>:<port>'}`;
+      if (ws.readyState === 1) signal({ failed: why });
+      fail(why);
+    };
     const open = (dc) => {
       dc.binaryType = 'arraybuffer';
       dc.onopen = () => {
+        settled = true;
+        clearTimeout(timer);
+        // Leaving the relay now isn't leaving the fight, and the other peer may be a moment from connecting
+        ws.send(JSON.stringify({ t: 'linked' }));
         ws.close();
         const peer = { ...info, send: (b) => { if (dc.readyState === 'open') dc.send(b); }, onPacket: () => {}, onClose: () => {}, close: () => { dc.close(); pc.close(); } };
         dc.onmessage = (e) => peer.onPacket(e.data);
@@ -29,7 +48,8 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
       };
     };
     const onSignal = async (d) => {
-      if (d.sdp) {
+      if (d.failed) fail(String(d.failed));
+      else if (d.sdp) {
         await pc.setRemoteDescription(d.sdp);
         remoteSet = true;
         for (const c of pending) await pc.addIceCandidate(c);
@@ -41,6 +61,8 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
     };
     ws.onopen = () => ws.send(JSON.stringify({ t: 'join', room, build, hello }));
     ws.onerror = () => fail('could not reach the relay');
+    // Once there's a connection under way it may not need the relay any more, and the timer covers it if it did
+    ws.onclose = () => { if (!pc) fail('lost the relay while waiting for the other player'); };
     ws.onmessage = async (e) => {
       const m = JSON.parse(e.data);
       if (m.t === 'waiting') onStatus('Waiting for the other player...');
@@ -51,14 +73,21 @@ export function connectPeer({ relay, room, build, hello = null, iceServers = [],
         onStatus('Connecting...');
         info = { seat: m.seat, seed: m.seed, other: m.other };
         pc = new RTCPeerConnection({ iceServers });
+        // ICE only reports failure if it had an address to try. With none, such as a hidden local address from another network, it waits forever.
+        timer = setTimeout(noRoute, CONNECT_MS);
         pc.onicecandidate = (ev) => { if (ev.candidate) signal({ ice: ev.candidate }); };
-        pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') fail('could not connect directly to the other player'); };
-        if (m.seat === 0) {
-          open(pc.createDataChannel('inputs', { ordered: false, maxRetransmits: 0 }));
-          await pc.setLocalDescription(await pc.createOffer());
-          signal({ sdp: pc.localDescription });
-        } else pc.ondatachannel = (ev) => open(ev.channel);
-      } else if (m.t === 'signal') await onSignal(m.data);
+        pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') noRoute(); };
+        try {
+          if (m.seat === 0) {
+            open(pc.createDataChannel('inputs', { ordered: false, maxRetransmits: 0 }));
+            await pc.setLocalDescription(await pc.createOffer());
+            signal({ sdp: pc.localDescription });
+          } else pc.ondatachannel = (ev) => open(ev.channel);
+        } catch (err) { fail(`could not set up the connection: ${err.message}`); }
+      } else if (m.t === 'signal') {
+        // A step that throws here would otherwise leave both peers waiting on an answer that's never coming
+        try { await onSignal(m.data); } catch (err) { fail(`could not set up the connection: ${err.message}`); }
+      }
     };
   });
 }

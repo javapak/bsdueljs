@@ -6,7 +6,7 @@ import * as DM from './detmath.js';
 import * as C from './combat.js';
 import { actionId, STANCE_KEYS } from './gamedata.js';
 import { angleVectors, add, sub, scale, dot, cross, len, norm, entityMatrix, angleNorm, approachAngle, matPoint } from './mathx.js';
-import { MASK_PLAYERSOLID } from './bsp.js';
+import { MASK_PLAYERSOLID, SURF_SKY, SURF_SKY2D } from './bsp.js';
 
 /**
  * What a fighter is doing right now, in Player.act. Built by World.startAction, or World.startAttack for attacks.
@@ -50,6 +50,40 @@ export const IN = { ATTACK: 1, JUMP: 2, ROLL: 4, FORWARD: 8, BACK: 0x10, LEFT: 0
 // [R 18034ce17] 0x13aa0003, without +spraypaint: any of these, or any move input, stands a sitting fighter up
 const STAND_BUTTONS = IN.ATTACK | IN.JUMP | IN.GRAB | IN.FLOURISH | IN.TAUNT | IN.BLOCK | IN.BOW | IN.SIT, MOVE_BUTTONS = IN.FORWARD | IN.BACK | IN.LEFT | IN.RIGHT;
 const HULL_MIN = [-13, -13, 0], HULL_MAX = [13, 13, 72];
+// [R 180384050] what a flying throwable stops on: MASK_SOLID, with no player clip in it, so the walls that only hold players in don't hold it
+const MASK_STAR = 0x200400B;
+// [R 18034d8f0] its aim, and [R 180154320] whether it can see a target
+const MASK_STAR_AIM = 0x4081, MASK_STAR_SIGHT = 0x2006081;
+// [R 18034e020] above the thrower's middle, where the cone is measured from
+const STAR_TARGET_EYE = 40;
+// [R 18038b070] how small a term has to be for the intercept to treat it as nothing
+const STAR_INTERCEPT_EPS = 1e-6;
+const starCenter = (p) => [p.origin[0] + (HULL_MIN[0] + HULL_MAX[0]) / 2, p.origin[1] + (HULL_MIN[1] + HULL_MAX[1]) / 2, p.origin[2] + (HULL_MIN[2] + HULL_MAX[2]) / 2];
+/**
+ * [R 18038b070] Where a target on a straight line meets something leaving now at a fixed speed.
+ * @param {number[]} from Where it leaves.
+ * @param {number[]} to Where the target is.
+ * @param {number[]} vel The target's velocity.
+ * @param {number} speed Its speed.
+ * @returns {number[]|null} The meeting point, or null if there isn't one.
+ */
+function starIntercept(from, to, vel, speed) {
+  const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+  const c = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], b = 2 * (d[0] * vel[0] + d[1] * vel[1] + d[2] * vel[2]), a = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2] - speed * speed;
+  let t0, t1;
+  if (Math.abs(a) >= STAR_INTERCEPT_EPS) {
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return null;
+    const r = Math.sqrt(disc);
+    t0 = (-b - r) * (0.5 / a); t1 = (r - b) * (0.5 / a);
+  } else if (Math.abs(b) >= STAR_INTERCEPT_EPS) t0 = t1 = -(c / b);
+  else if (Math.abs(c) >= STAR_INTERCEPT_EPS) return null;
+  else t0 = t1 = 0;
+  let t = Math.min(t0, t1);
+  if (t < 0) t = Math.max(t0, t1);
+  if (t < 0 || t === 0) return null;
+  return [to[0] + vel[0] * t, to[1] + vel[1] * t, to[2] + vel[2] * t];
+}
 const STEP = 18;
 const SURF_SKY_FLAG = 4, SURF_NODRAW_FLAG = 0x80, CONTENTS_WALLRUN = 0x80000;
 // [I] forward/side input the charge dampen scales. cl_forwardspeed defaults to 450, but that hits the speed cap almost
@@ -718,150 +752,239 @@ export class World {
   }
 
   /**
-   * [R 18034e020] The nearest thing to the crosshair among enemies in reach and in sight. The cone tightens the closer they are.
+   * [R 180373780] Who a throw can touch or home on: someone else alive, in the thrower's own match. Everyone else it flies straight through.
+   * @param {Player} q The fighter.
+   * @param {number} owner The thrower's id.
+   * @param {number} arena The thrower's arena.
+   * @returns {boolean} Whether it counts.
+   */
+  starEnemy(q, owner, arena) {
+    if (q.id === owner || !q.alive || q.arena !== arena) return false;
+    const f = this.duels[arena]?.fighters;
+    return !f || (f.includes(q.id) && f.includes(owner));
+  }
+
+  /**
+   * [R 18034e020] The enemy nearest the crosshair, in reach and in sight. The cone tightens the closer they are, and each
+   * one that qualifies raises the bar for the next.
    * @param {Player} p The fighter.
-   * @returns {Player|null} Who the throw homes on. If several qualify, this is the last one checked.
+   * @returns {Player|null} Who the throw homes on.
    */
   starTarget(p) {
-    const cv = this.cv, eye = [p.origin[0], p.origin[1], p.origin[2] + 40];
+    const cv = this.cv, eye = [p.origin[0], p.origin[1], p.origin[2] + 36 + STAR_TARGET_EYE];
     const { forward: f, right: r, up: u } = angleVectors([p.pitch, p.viewYaw, 0]);
-    let best = null;
+    let best = null, reach = cv.f('bb_throwable_target_distance_max'), minR = cv.f('bb_throwable_target_dot_min_right'), minU = cv.f('bb_throwable_target_dot_min_up');
     for (const q of this.players) {
-      if (q === p || !q.alive || q.arena !== p.arena) continue;
-      const c = [q.origin[0], q.origin[1], q.origin[2] + 36], d = sub(c, eye), l = DM.hypot(d[0], d[1], d[2]);
-      if (l > cv.f('bb_throwable_target_distance_max') || !l) continue;
+      if (!this.starEnemy(q, p.id, p.arena)) continue;
+      const seen = this.bsp.traceBox([p.origin[0], p.origin[1], p.origin[2] + 64], [q.origin[0], q.origin[1], q.origin[2] + 64], [0, 0, 0], [0, 0, 0], MASK_STAR_SIGHT);
+      if (seen.fraction < 1) continue;
+      const d = sub(starCenter(q), eye), l = DM.hypot(d[0], d[1], d[2]);
+      if (!l || l > reach) continue;
       const n = [d[0] / l, d[1] / l, d[2] / l];
       if (dot(f, n) <= 0) continue;
-      const k = Math.min(1, l / 256);
-      if (1 - Math.abs(dot(r, n)) < 0.97 + (cv.f('bb_throwable_target_dot_min_right') - 0.97) * k) continue;
-      if (1 - Math.abs(dot(u, n)) < 0.97 + (cv.f('bb_throwable_target_dot_min_up') - 0.97) * k) continue;
-      if (this.bsp.traceBox(eye, c, [0, 0, 0], [0, 0, 0], MASK_PLAYERSOLID).fraction < 1) continue;
-      best = q;
+      const k = Math.min(1, l / 256), onR = 1 - Math.abs(dot(r, n)), onU = 1 - Math.abs(dot(u, n));
+      if (onR < 0.97 + (minR - 0.97) * k || onU < 0.97 + (minU - 0.97) * k) continue;
+      best = q; reach = l; minR = onR; minU = onU;
     }
     return best;
   }
 
   /**
-   * [R 18034db18, 180383b64] Aimed along the view, pitched down a little; farther throws spread more, and leave at an
-   * angle they then curve back from.
-   * Releases the throwable from the left hand.
+   * [R 18034d8f0, 180383940] It leaves from the thrower's middle, 48 up, aimed at what the crosshair is on even when it's homing: the
+   * target only sets how far the throw reckons it's going. Farther throws spread more, and leave at an angle they then curve back from.
    * @param {Player} p The fighter.
    */
   launchStar(p) {
-    const cv = this.cv, c = this.char(p);
+    const cv = this.cv;
     const eye = [p.origin[0], p.origin[1], p.origin[2] + 64];
     const { forward: f } = angleVectors([p.pitch + cv.f('bb_throwable_pitch_offset'), p.viewYaw, 0]);
-    const end = [eye[0] + f[0] * 56756, eye[1] + f[1] * 56756, eye[2] + f[2] * 56756];
-    const aimHit = this.bsp.traceBox(eye, end, [-5, -5, -5], [5, 5, 5], MASK_PLAYERSOLID);
+    const end = [eye[0] + f[0] * 56755.84, eye[1] + f[1] * 56755.84, eye[2] + f[2] * 56755.84];
+    const crosshair = this.bsp.traceBox(eye, end, [-5, -5, -5], [5, 5, 5], MASK_STAR_AIM).endpos;
     const target = this.starTarget(p);
-    const aim = target ? [target.origin[0], target.origin[1], target.origin[2] + 36] : [...aimHit.endpos];
-    const world = this.poseWorld(p), att = c.root.attachments.find((x) => x.name === 'anim_attachment_LH');
-    const hand = att ? matPoint(world[att.bone], [att.local[3], att.local[7], att.local[11]]) : [p.origin[0], p.origin[1], p.origin[2] + 50];
-    const dist = DM.hypot(aim[0] - hand[0], aim[1] - hand[1], aim[2] - hand[2]), near = Math.max(0, Math.min(1, dist / 512));
+    const start = [p.origin[0], p.origin[1], p.origin[2] + 48], to = target ? starCenter(target) : crosshair;
+    const dist = DM.hypot(to[0] - start[0], to[1] - start[1], to[2] - start[2]), near = Math.max(0, Math.min(1, dist / 512));
     const spread = near * cv.f('bb_throwable_random_amount');
-    const tgt = [0, 1, 2].map((i) => aim[i] + (this.random() * 2 - 1) * spread);
+    const aim = [0, 1, 2].map((i) => crosshair[i] + (this.random() * 2 - 1) * spread);
     const speed = cv.f('bb_throwable_speed'), arc = near * cv.f(target ? 'bb_throwable_arc_amount_homing' : 'bb_throwable_arc_amount');
-    const to = sub(tgt, hand), v = norm([to[0] - to[1] * arc, to[0] * arc + to[1], to[2]]);
+    const a = sub(aim, start), home = (dist - 128) * (1 / 8960) + 0.2;
     this.stars.push({
-      id: this.nextStar++, owner: p.id, arena: p.arena, type: this.data.characters[p.character].throwableweapon, pos: hand, vel: scale(v, speed), target: target?.id ?? null, aim: tgt,
-      aimT: dist / speed * 0.9, homeT: Math.max(0, dist - 128) * (1 / 9000) + 0.2, homeTotal: Math.max(0, dist - 128) * (1 / 9000) + 0.2, steering: true, life: cv.f('bb_throwable_life_duration'),
+      id: this.nextStar++, owner: p.id, arena: p.arena, type: this.data.characters[p.character].throwableweapon, pos: start, vel: scale(norm([a[0] - a[1] * arc, a[0] * arc + a[1], a[2]]), speed),
+      target: target?.id ?? null, aim, dir: norm(a), aimT: dist / speed * 0.9, homeT: home, homeTotal: home, steerT: 1,
     });
-    this.emit({ type: 'star_throw', id: p.id, star: this.nextStar - 1, kind: this.stars.at(-1).type, pos: hand });
+    this.emit({ type: 'star_throw', id: p.id, star: this.nextStar - 1, kind: this.stars.at(-1).type, pos: start });
   }
 
   /**
-   * [R 180385660] Turns toward the aim point, leading a target by its velocity, until pointing there. Then a star with
-   * no target falls.
-   * Moves every thrown weapon one tick, and ends it on a fighter, on the world, or when its life runs out.
+   * [R 1803850a0] Before each move: a target stops counting once it's dead, out of the match, or more than a little behind the way the
+   * star set off. With no target, passing the aim point ends the aiming. Either way the star is on its own from there.
+   * @param {object} s The thrown weapon.
+   */
+  starLetGo(s) {
+    if (!this.player(s.owner)) return;
+    let drop = false;
+    if (s.target !== null) {
+      const t = this.player(s.target);
+      if (!t || !this.starEnemy(t, s.owner, s.arena)) drop = true;
+      if (t && dot(norm(sub(starCenter(t), s.pos)), s.dir) < -0.25) drop = true;
+    }
+    if (s.aimT > 0 && s.target === null && (Math.abs(s.vel[0]) >= 0.01 || Math.abs(s.vel[1]) >= 0.01 || Math.abs(s.vel[2]) >= 0.01) && dot(norm(sub(s.aim, s.pos)), norm(s.vel)) < 0) drop = true;
+    if (drop) { s.aimT = 0; s.target = null; }
+  }
+
+  /**
+   * [R 1803855f0] Turns toward the aim point, sliding over to where a target will be as the homing time runs out. Within a hair of pointing
+   * there, or after a second of trying, a star with no target just falls.
+   * @param {object} s The thrown weapon.
+   */
+  starSteer(s) {
+    const cv = this.cv, speed = cv.f('bb_throwable_speed'), target = s.target !== null ? this.player(s.target) : null;
+    const ballistic = !(s.steerT > 0) && !target, home = s.homeTotal > 0 ? 1 - s.homeT / s.homeTotal : 1;
+    let want = s.aim;
+    if (target) {
+      const c = starCenter(target), l = DM.hypot(target.vel[0], target.vel[1], target.vel[2]), vel = l >= 400 ? scale(target.vel, 400 / l) : target.vel;
+      const lead = starIntercept(s.pos, c, vel, speed) ?? c;
+      want = [s.aim[0] + (lead[0] - s.aim[0]) * home, s.aim[1] + (lead[1] - s.aim[1]) * home, s.aim[2] + (c[2] - s.aim[2]) * home];
+    }
+    const cur = norm(s.vel);
+    let dir = norm(sub(want, s.pos));
+    if (ballistic || (s.aimT <= 0 && !target)) dir = cur;
+    const delta = sub(dir, cur);
+    let next;
+    if (DM.hypot(delta[0], delta[1], delta[2]) >= 0.015) {
+      const rate = Math.min(1, (cv.f('bb_throwable_angular_speed') + (target ? home * cv.f('bb_throwable_angular_speed_homing') : 0)) * TICK);
+      next = [cur[0] + delta[0] * rate, cur[1] + delta[1] * rate, cur[2] + delta[2] * rate];
+    } else { next = dir; s.steerT = 0; }
+    s.vel = scale(norm(next), speed);
+    if (ballistic) s.vel[2] -= TICK * cv.f('bb_throwable_gravity');
+  }
+
+  /**
+   * [R 180384050, 180384b90] Every thrown weapon, one tick: let go of a lost target, steer, then sweep. Enemies and other people's throwables come
+   * first, over the whole move; only with neither in the way does it look for the world, which is only what's solid, so a player clip doesn't stop it.
+   * A blade that's there wins over all of them. It lasts until it hits something: bb_throwable_life_duration is how long it stays there afterward.
    */
   updateStars() {
-    const cv = this.cv, speed = cv.f('bb_throwable_speed');
     for (const s of this.stars) {
-      s.life -= TICK; s.aimT -= TICK; s.homeT = Math.max(0, s.homeT - TICK);
-      const tg = s.target !== null ? this.player(s.target) : null, target = tg?.alive ? tg : null;
-      const ballistic = !s.steering && !target;
-      const home = s.homeTotal > 0 ? 1 - s.homeT / s.homeTotal : 1;
-      let want = s.aim;
-      if (target) {
-        const c = [target.origin[0], target.origin[1], target.origin[2] + 36], l = DM.hypot(target.vel[0], target.vel[1], target.vel[2]);
-        const vel = l > 400 ? scale(target.vel, 400 / l) : target.vel, t = DM.hypot(c[0] - s.pos[0], c[1] - s.pos[1], c[2] - s.pos[2]) / speed;
-        const lead = [c[0] + vel[0] * t, c[1] + vel[1] * t, c[2]];
-        want = [0, 1, 2].map((i) => s.aim[i] + (lead[i] - s.aim[i]) * home);
-      }
-      const cur = norm(s.vel);
-      let dir = norm(sub(want, s.pos));
-      if (ballistic || (s.aimT <= 0 && !target)) dir = cur;
-      const delta = sub(dir, cur);
-      let next;
-      if (DM.hypot(delta[0], delta[1], delta[2]) < 0.015) { next = dir; s.steering = false; } else {
-        const rate = Math.min(1, (cv.f('bb_throwable_angular_speed') + (target ? home * cv.f('bb_throwable_angular_speed_homing') : 0)) * TICK);
-        next = [cur[0] + delta[0] * rate, cur[1] + delta[1] * rate, cur[2] + delta[2] * rate];
-      }
-      s.vel = scale(norm(next), speed);
-      if (ballistic) s.vel[2] -= TICK * cv.f('bb_throwable_gravity');
+      if (s.done) continue;
+      this.starLetGo(s);
+      this.starSteer(s);
       const end = [s.pos[0] + s.vel[0] * TICK, s.pos[1] + s.vel[1] * TICK, s.pos[2] + s.vel[2] * TICK];
-      const w = this.bsp.traceBox(s.pos, end, [-1, -1, -1], [1, 1, 1], MASK_PLAYERSOLID);
-      const hit = this.starHitsPlayer(s, end, w.fraction);
-      if (hit) { this.starHit(s, hit); s.done = true; continue; }
-      if (w.fraction < 1) { this.emit({ type: 'star_hit', what: 'world', star: s.id, kind: s.type, pos: w.endpos, normal: w.normal }); s.done = true; continue; }
+      const t = this.data.throwables[s.type], size = (k, d) => { const v = parseFloat(String(t?.[k] ?? '').split(/\s+/)[0]); return Number.isNaN(v) ? d : v; };
+      const bp = size('bounds_player', 8), b = size('bounds', 1);
+      const hit = this.starSweep(s, end, bp, b);
+      const w = hit ? null : this.bsp.traceBox(s.pos, end, [-b, -b, -b], [b, b, b], MASK_STAR);
+      const blade = this.starBlade(s, size('bounds_tracer', 10));
+      s.aimT = Math.max(0, s.aimT - TICK); s.homeT = Math.max(0, s.homeT - TICK); s.steerT = Math.max(0, s.steerT - TICK);
+      if (blade) { this.emit({ type: 'star_hit', what: 'blocked', star: s.id, kind: s.type, pos: end, id: blade.id }); s.done = true; continue; } // [R 180383230]
+      if (hit?.star) {
+        // [R 180382ec0] two throws knock each other away
+        for (const x of [s, hit.star]) { this.emit({ type: 'star_hit', what: 'blocked', star: x.id, kind: x.type, pos: x.pos }); x.done = true; }
+        continue;
+      }
+      if (hit) { this.starHit(s, hit.player); s.done = true; continue; }
+      if (w.fraction < 1 || w.startsolid) {
+        // [R 180383550] the sky takes it without a mark
+        if (!(this.bsp.texinfo[w.texinfo]?.flags & (SURF_SKY | SURF_SKY2D))) this.emit({ type: 'star_hit', what: 'world', star: s.id, kind: s.type, pos: w.endpos, normal: w.normal });
+        s.done = true;
+        continue;
+      }
       s.pos = end;
-      if (s.life <= 0) s.done = true;
     }
     if (this.stars.some((s) => s.done)) this.stars = this.stars.filter((s) => !s.done);
   }
 
   /**
-   * The swept star against each fighter's hull, grown by the type's bounds_player
+   * [R 180384f00] The first thing on the star's path it's allowed to touch.
    * @param {object} s The thrown weapon.
    * @param {number[]} end Where it ends this tick.
-   * @param {number} limit Fraction of the move before it hits the world.
-   * @returns {Player|null} The fighter it reaches.
+   * @param {number} bp The type's bounds_player.
+   * @param {number} b The type's bounds.
+   * @returns {{player: Player}|{star: object}|null} What it reaches.
    */
-  starHitsPlayer(s, end, limit) {
-    const R = 8;
-    for (const q of this.players) {
-      if (q.id === s.owner || !q.alive || q.arena !== s.arena) continue;
-      const mn = [q.origin[0] + HULL_MIN[0] - R, q.origin[1] + HULL_MIN[1] - R, q.origin[2] + HULL_MIN[2] - R], mx = [q.origin[0] + HULL_MAX[0] + R, q.origin[1] + HULL_MAX[1] + R, q.origin[2] + HULL_MAX[2] + R];
-      let t0 = 0, t1 = limit, inside = true;
-      for (let i = 0; i < 3 && inside; i++) {
+  starSweep(s, end, bp, b) {
+    let first = Infinity, out = null;
+    const through = (mn, mx) => {
+      let t0 = 0, t1 = 1;
+      for (let i = 0; i < 3; i++) {
         const d = end[i] - s.pos[i];
-        if (Math.abs(d) < 1e-6) { if (s.pos[i] < mn[i] || s.pos[i] > mx[i]) inside = false; continue; }
-        const a = (mn[i] - s.pos[i]) / d, b = (mx[i] - s.pos[i]) / d;
-        t0 = Math.max(t0, Math.min(a, b)); t1 = Math.min(t1, Math.max(a, b));
-        if (t0 > t1) inside = false;
+        if (Math.abs(d) < 1e-6) { if (s.pos[i] < mn[i] || s.pos[i] > mx[i]) return Infinity; continue; }
+        const a = (mn[i] - s.pos[i]) / d, c = (mx[i] - s.pos[i]) / d;
+        t0 = Math.max(t0, Math.min(a, c)); t1 = Math.min(t1, Math.max(a, c));
+        if (t0 > t1) return Infinity;
       }
-      if (inside) return q;
+      return t0;
+    };
+    for (const q of this.players) {
+      if (!this.starEnemy(q, s.owner, s.arena)) continue;
+      const t = through([q.origin[0] + HULL_MIN[0] - bp, q.origin[1] + HULL_MIN[1] - bp, q.origin[2] + HULL_MIN[2] - bp], [q.origin[0] + HULL_MAX[0] + bp, q.origin[1] + HULL_MAX[1] + bp, q.origin[2] + HULL_MAX[2] + bp]);
+      if (t < first) { first = t; out = { player: q }; }
+    }
+    for (const o of this.stars) {
+      if (o === s || o.done || o.owner === s.owner) continue;
+      const r = bp + b, t = through([o.pos[0] - r, o.pos[1] - r, o.pos[2] - r], [o.pos[0] + r, o.pos[1] + r, o.pos[2] + r]);
+      if (t < first) { first = t; out = { star: o }; }
+    }
+    return out;
+  }
+
+  /**
+   * [R 180381880, 180387200, 180389580] An enemy's live blade batting it out of the air: its samples newest first, each swept box reduced to a
+   * segment and radius as in a clash, and the star a point with a radius of twice its bounds_tracer.
+   * @param {object} s The thrown weapon.
+   * @param {number} bt The type's bounds_tracer.
+   * @returns {Player|null} Whose blade.
+   */
+  starBlade(s, bt) {
+    for (const q of this.players) {
+      if (!this.starEnemy(q, s.owner, s.arena) || !q.isSwinging() || q.act.trDone) continue;
+      const ring = q.act.bladeRing ?? [];
+      for (let i = ring.length - 1; i >= 1; i--) {
+        const box = ring[i].box;
+        if (!box) continue;
+        let ra = 2 * Math.sqrt(box.mx[1] * box.mx[2]);
+        if (String(q.sword || this.data.charSword[q.character]).toLowerCase() === 'foil') ra *= 2;
+        const a0 = add(box.center, scale(box.along, box.mx[0] - ra)), a1 = add(box.center, scale(box.sweepDir, box.mn[0] + ra));
+        const ab = sub(a1, a0), l2 = dot(ab, ab), u = l2 > 0 ? Math.max(0, Math.min(1, dot(sub(s.pos, a0), ab) / l2)) : 0;
+        const c = sub(s.pos, add(a0, scale(ab, u)));
+        if (DM.hypot(c[0], c[1], c[2]) < Math.max(ra, 2 * bt)) return q;
+      }
     }
     return null;
   }
 
   /**
-   * [R 180382303, 18038245a] Facing it, an idle fighter catches it on reflex and a blocking or parrying one over a wider
-   * arc. A fighter already swinging, rolling or shuffling takes no reaction. Otherwise it damages and interrupts.
+   * [R 1803821c0] Whether it's blocked goes by the fighter's facing and where the star is, both flat. Idle catches it over one arc, and a block,
+   * parry, guard or charging swing over another. On the dash's cooldown nothing blocks it, and Interrupt and KneelParry always do. A swing past its
+   * charge takes the hit without reacting. A charge, a guard and those two only flinch: [R 18037eca0] a gesture over what they're doing, not drawn yet.
+   * Anything else, a roll or shuffle included, is knocked into AutoBlockThrowable or InterruptUpper.
    * @param {object} s The thrown weapon.
    * @param {Player} v Who it reached.
    */
   starHit(s, v) {
-    const cv = this.cv, a = v.act;
-    const { forward: f } = angleVectors([0, v.viewYaw, 0]);
-    const n = norm([s.pos[0] - v.origin[0], s.pos[1] - v.origin[1], s.pos[2] - v.origin[2] - 36]), d = dot(f, n);
-    const evading = a?.name === 'Roll' || a?.name === 'Shuffle' || a?.name === 'AirDash';
-    const swinging = a?.attack && a.phase !== 'charge';
-    let blocked = !a ? d >= cv.f('bb_throwable_autoblock_dot_min') : (a.kind === 'block' || a.kind === 'parry' || a.kind === 'guard') && d >= cv.f('bb_throwable_block_or_parry_dot_min');
-    // [R 180382464] no blocking throwables on the dash's cooldown
-    if (v.dashCooldown > 0) blocked = false;
-    if (a?.name === 'Interrupt' || a?.name === 'KneelParry') blocked = true;
-    const reacts = !evading && !swinging && !v.kneeling;
-    const def = this.data.action('ThrowWeapon');
+    const cv = this.cv, a = v.act, def = this.data.action('ThrowWeapon');
+    const { forward: f } = angleVectors([0, v.viewYaw, 0]), c = starCenter(v);
+    const facing = dot(f, norm([s.pos[0] - c[0], s.pos[1] - c[1], 0]));
+    const inArc = facing >= cv.f(a ? 'bb_throwable_block_or_parry_dot_min' : 'bb_throwable_autoblock_dot_min');
+    // [R 18034c600] a parry only counts between bb_intercept_warmup and bb_intercept_endtime
+    const parrying = a?.kind === 'parry' && a.t >= cv.f('bb_intercept_warmup') && a.t < cv.f('bb_intercept_endtime');
+    let blocked = inArc && (!a || a.kind === 'block' || parrying), knocked = true;
+    if (v.dashCooldown > 0) blocked = false; // [R 180382464]
+    else if ((a?.attack && a.phase === 'charge') || a?.kind === 'guard') { blocked = inArc; knocked = false; } // [R 180374320, 1803743c0]
+    else if (a?.attack) knocked = false; // [R 180374270]
+    else if (a?.name === 'Interrupt' || a?.name === 'KneelParry') { blocked = true; knocked = false; }
     if (blocked) {
-      if (reacts) { this.startAction(v, 'AutoBlockThrowable', { force: true, anim: def.normal_block }); this.setSheathed(v, false); } // [R 18038257a]
+      if (!v.kneeling) {
+        if (knocked) this.startAction(v, 'AutoBlockThrowable', { force: true, anim: def.normal_block });
+        this.setSheathed(v, false); // [R 18038257a]
+      }
       this.emit({ type: 'star_hit', what: 'blocked', star: s.id, kind: s.type, pos: s.pos, id: v.id });
       return;
     }
     v.health -= Math.trunc(this.dashDamage(v, cv.f('bb_throwable_damage_player')));
     this.emit({ type: 'star_hit', what: 'player', star: s.id, kind: s.type, pos: s.pos, id: v.id });
     if (v.health <= 0) { this.kill(v, this.player(s.owner)); return; }
-    if (reacts && cv.f('bb_throwable_interrupt_on_hit')) { this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction }); this.setSheathed(v, false); } // [R 180382619]
+    // [R 180374610] one that's down has nothing to interrupt
+    if (knocked && !v.kneeling && cv.f('bb_throwable_interrupt_on_hit')) this.startAction(v, 'InterruptUpper', { force: true, anim: def.reaction });
   }
 
   /**
@@ -2482,6 +2605,8 @@ export class Match {
    * @param {Player[]} P The two fighters.
    */
   beginMatch(P) {
+    // A loadout chosen for the next set takes effect now, as the first round's reset picks it up
+    for (const p of P) if (p.nextSetLoadout) { p.nextLoadout = p.nextSetLoadout; p.nextSetLoadout = null; }
     this.fighters = P.map((p) => p.id);
     this.wins = Object.fromEntries(P.map((p) => [p.id, 0]));
     this.round = 0; this.winner = null; this.results = [];

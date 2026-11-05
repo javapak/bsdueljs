@@ -91,7 +91,6 @@ async function loadChar(key) {
   charCache.set(key, pr);
   return pr;
 }
-customize.ready(); status('Ready.');
 
 // ------------------------------------------------------------ net
 let ws, myId = null, started = false;
@@ -163,7 +162,7 @@ async function connectP2P() {
       relay: params.get('relay') ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/relay`, room: p2pRoom, bsp, mapBytes: bspBytes, read: (p) => fetchGame(p),
       hello: { name: customize.name, character: customize.char, item: customize.sword, look: customize.look, color: customize.color, options: { gae: !!cvar('bb_gae'), sde: !!cvar('bb_sde'), ibt: cvar('bb_ibt') } },
       iceServers: params.has('stun') ? [{ urls: params.get('stun') }] : [], inputDelay: whole('delay', 2, 0, 8), maxRollback: whole('rollback', 8, 1, 16),
-      input: readInput, onSnapshot, onEvent, onStatus: (s, bad) => { if (s) banner(s, bad ? 8 : 60); },
+      input: readInput, onSnapshot, onEvent, onStatus: (s, bad) => banner(s, bad ? 8 : 60),
     });
     myId = p2pMatch.myId;
     window.duelDebug.p2p = p2pMatch;
@@ -849,8 +848,12 @@ function closeCustomize() {
 }
 customize.onCancel(closeCustomize);
 customize.onConfirm(() => {
-  // [I] a fighter's loadout is game state, and changing it mid-match isn't in the peer to peer protocol yet
-  if (started && p2pRoom) { banner('Your loadout can\'t change during a direct match'); closeCustomize(); return; }
+  // A fighter's loadout is game state, so both peers change it together, when the next set starts
+  if (started && p2pRoom) {
+    if (p2pMatch) { p2pMatch.session.setLoadout({ character: customize.char, item: customize.sword, look: customize.look, color: customize.color }); banner('Loadout changes next set'); } else banner('Your loadout can\'t change until the match starts');
+    closeCustomize();
+    return;
+  }
   if (started) {
     ws?.send(JSON.stringify({ t: 'loadout', character: customize.char, item: customize.sword, look: customize.look, color: customize.color }));
     if (!spectating) banner('Loadout changes next round');
@@ -866,4 +869,6 @@ customize.onConfirm(() => {
   for (const k of Object.keys(info.characters)) loadChar(k);
   if (p2pRoom) connectP2P(); else connect();
 });
+// Only now, since the button does nothing until it has the handler above
+customize.ready(); status('Ready.');
 if (params.has('auto')) $('go').click();

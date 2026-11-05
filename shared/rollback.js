@@ -12,10 +12,12 @@ const NEUTRAL = Object.freeze([0, 0, 0]);
 export const packInput = (i) => [i[0] | 0, Math.fround(i[1]) + 0, Math.fround(i[2]) + 0];
 /**
  * @param {object} p A packet from a session.
- * @returns {ArrayBuffer} It as bytes: 12 for each input. Binary keeps every bit of the angles.
+ * @returns {ArrayBuffer} It as bytes: 12 for each input. Binary keeps every bit of the angles. Any loadouts follow as JSON, which is rare.
  */
 export function encodePacket(p) {
-  const n = p.inputs.length, out = new ArrayBuffer(28 + n * 12), v = new DataView(out);
+  const n = p.inputs.length, kit = p.loadouts?.length ? new TextEncoder().encode(JSON.stringify(p.loadouts)) : null;
+  const out = new ArrayBuffer(28 + n * 12 + (kit?.length ?? 0)), v = new DataView(out);
+  if (kit) new Uint8Array(out).set(kit, 28 + n * 12);
   v.setInt32(0, p.from, true); v.setInt32(4, n, true); v.setInt32(8, p.ack, true); v.setInt32(12, p.frame, true); v.setInt32(16, p.adv, true);
   v.setInt32(20, p.hash ? p.hash[0] : -1, true); v.setUint32(24, p.hash ? p.hash[1] : 0, true);
   p.inputs.forEach((inp, i) => { const o = 28 + i * 12; v.setInt32(o, inp[0], true); v.setFloat32(o + 4, inp[1], true); v.setFloat32(o + 8, inp[2], true); });
@@ -28,7 +30,8 @@ export function encodePacket(p) {
 export function decodePacket(b) {
   const v = new DataView(b), n = v.getInt32(4, true), inputs = new Array(n), hf = v.getInt32(20, true);
   for (let i = 0; i < n; i++) { const o = 28 + i * 12; inputs[i] = [v.getInt32(o, true), v.getFloat32(o + 4, true), v.getFloat32(o + 8, true)]; }
-  return { from: v.getInt32(0, true), inputs, ack: v.getInt32(8, true), frame: v.getInt32(12, true), adv: v.getInt32(16, true), hash: hf >= 0 ? [hf, v.getUint32(24, true)] : null };
+  const kit = b.byteLength > 28 + n * 12 ? JSON.parse(new TextDecoder().decode(new Uint8Array(b, 28 + n * 12))) : [];
+  return { from: v.getInt32(0, true), inputs, ack: v.getInt32(8, true), frame: v.getInt32(12, true), adv: v.getInt32(16, true), hash: hf >= 0 ? [hf, v.getUint32(24, true)] : null, loadouts: kit };
 }
 const sameInput = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 // Frames between state hashes: about one second
@@ -50,13 +53,17 @@ export class RollbackSession {
    * @param {number} [o.maxRollback] The furthest back it can rewind. Past this it waits for the other peer, since a short freeze reads better than
    * a large snap. 8 ticks is 125 ms, about Slippi's limit.
    * @param {function(number): void} [o.onDesync] Called with the frame if the peers' states ever differ.
+   * @param {function(object): object} [o.dress] Turns a loadout from either peer into the fields it sets on a fighter, the same way on both.
    */
-  constructor({ world, fighters, me, send, inputDelay = 2, remoteDelay = inputDelay, maxRollback = 8, onDesync = () => {} }) {
-    Object.assign(this, { world, fighters, me, send, inputDelay, maxRollback, onDesync });
+  constructor({ world, fighters, me, send, inputDelay = 2, remoteDelay = inputDelay, maxRollback = 8, onDesync = () => {}, dress = (l) => l }) {
+    Object.assign(this, { world, fighters, me, send, inputDelay, maxRollback, onDesync, dress });
     this.them = 1 - me;
     this.frame = 0;
     // Each side's inputs by frame. Everyone starts neutral for the frames before the first press can land.
     this.inputs = [new Map(), new Map()];
+    // A change of loadout travels with an input, so it lands on the same frame on both peers and a rewind replays it
+    this.loadouts = [new Map(), new Map()];
+    this.nextKit = null;
     for (let f = 0; f < inputDelay; f++) this.inputs[me].set(f, NEUTRAL);
     for (let f = 0; f < remoteDelay; f++) this.inputs[1 - me].set(f, NEUTRAL);
     this.localHigh = inputDelay - 1; // newest local input
@@ -80,9 +87,12 @@ export class RollbackSession {
   receive(p) {
     const remote = this.inputs[this.them];
     p.inputs.forEach((inp, i) => { const f = p.from + i; if (f > this.remoteConfirmed && !remote.has(f)) remote.set(f, inp); });
+    // A loadout is sent for as long as its input is, so it's always here by the time that input is confirmed
+    for (const [f, kit] of p.loadouts ?? []) if (f > this.remoteConfirmed) this.loadouts[this.them].set(f, kit);
     while (remote.has(this.remoteConfirmed + 1)) {
       const f = ++this.remoteConfirmed, was = this.used.get(f);
-      if (was && !sameInput(was, remote.get(f))) { this.stats.mispredictions++; if (this.rewindTo === null || f < this.rewindTo) this.rewindTo = f; }
+      // Nothing guesses a loadout, so any frame already played without one has to be played again, whatever the buttons were
+      if (was && (!sameInput(was, remote.get(f)) || this.loadouts[this.them].has(f))) { this.stats.mispredictions++; if (this.rewindTo === null || f < this.rewindTo) this.rewindTo = f; }
     }
     if (p.ack > this.peerAck) this.peerAck = p.ack;
     if (p.frame > this.remoteFrame) { this.remoteFrame = p.frame; this.remoteAdvantage = p.adv; }
@@ -103,13 +113,22 @@ export class RollbackSession {
     const moving = !behind && !ahead;
     if (moving) {
       const at = this.frame + this.inputDelay;
-      if (!this.inputs[this.me].has(at)) { this.inputs[this.me].set(at, packInput(localInput)); this.localHigh = at; }
+      if (!this.inputs[this.me].has(at)) {
+        this.inputs[this.me].set(at, packInput(localInput)); this.localHigh = at;
+        if (this.nextKit) { this.loadouts[this.me].set(at, this.nextKit); this.nextKit = null; }
+      }
     }
     this.sendInputs();
     if (moving) { this.stepFrame(this.frame); this.frame++; }
     this.prune();
     return moving;
   }
+
+  /**
+   * What this peer's fighter wears from the next set on.
+   * @param {object} kit The loadout, as `dress` takes it. It goes through JSON here so both peers read exactly the same thing.
+   */
+  setLoadout(kit) { this.nextKit = JSON.parse(JSON.stringify(kit)); }
 
   /**
    * [the way GGPO keeps peers level] Two peers running the same speed but started apart stay apart, and the one ahead does all the
@@ -168,6 +187,8 @@ export class RollbackSession {
     for (let i = 0; i < 2; i++) {
       const p = this.fighters[i], inp = i === this.them ? guess : this.inputFor(i, f);
       [p.buttons, p.viewYaw, p.pitch] = inp;
+      const kit = this.loadouts[i].get(f);
+      if (kit) p.nextSetLoadout = this.dress(kit);
     }
     w.step();
     this.collectEvents(f);
@@ -204,7 +225,8 @@ export class RollbackSession {
   sendInputs() {
     const from = this.peerAck + 1, list = [], mine = this.inputs[this.me];
     for (let f = from; f <= this.localHigh; f++) list.push(mine.get(f));
-    this.send({ from, inputs: list, ack: this.remoteConfirmed, frame: this.frame, adv: this.advantage(), hash: this.hashOut });
+    const loadouts = this.loadouts[this.me].size ? [...this.loadouts[this.me]].filter(([f]) => f >= from) : [];
+    this.send({ from, inputs: list, ack: this.remoteConfirmed, frame: this.frame, adv: this.advantage(), hash: this.hashOut, loadouts });
   }
 
   /** A frame's state is final once everything before it is confirmed. Hashes those at intervals to compare with the other peer. */
@@ -237,8 +259,10 @@ export class RollbackSession {
     // their packets can arrive out of order, so these aren't in frame order. A peer that's behind still has to play what's confirmed.
     const theirs = Math.min(this.remoteConfirmed, this.frame);
     for (const f of this.inputs[this.them].keys()) if (f < theirs) this.inputs[this.them].delete(f);
+    for (const f of this.loadouts[this.them].keys()) if (f < theirs) this.loadouts[this.them].delete(f);
     // a rewind can go back to anything not yet confirmed, and needs this peer's inputs for it even if they've arrived over there
     const mine = Math.min(this.peerAck + 1, this.remoteConfirmed, this.frame);
     for (const f of this.inputs[this.me].keys()) { if (f >= mine) break; this.inputs[this.me].delete(f); }
+    for (const f of this.loadouts[this.me].keys()) { if (f >= mine) break; this.loadouts[this.me].delete(f); }
   }
 }

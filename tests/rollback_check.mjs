@@ -189,6 +189,42 @@ for (const net of [
   check(compared > 20 && differ === 0, `the rolled back game matches a straight replay of the same inputs: ${compared} hashes, ${differ} differ`);
 }
 
+// --- 4b. a change of loadout over a bad network: it waits for the next set, then lands the same on both peers
+{
+  const short = new Cvars(JSON.parse(readFileSync(new URL('../shared/cvars_all.json', import.meta.url))));
+  for (const [k, v] of [['vs_duel_rounds', 1], ['vs_duel_timelimit', 4], ['vs_duel_warmup_time_initial', 1], ['vs_duel_intermission_time', 0.5], ['vs_duel_cooldown_time', 1]]) short.c.set(k, v);
+  const game = () => {
+    const w = new World({ bsp, data, cvars: short, assets, map: 'duel_temple', seed: 99, arenas: Match.single });
+    const P = [new Player(1, 'A', 'knight'), new Player(2, 'B', 'ryoku')];
+    w.duels[0].seat(P);
+    return { w, P };
+  };
+  const A = game(), B = game(), desync = [];
+  const wa = new Wire(0.08, 0.03, 0.2, 25, (p) => sb.receive(p)), wb = new Wire(0.08, 0.03, 0.2, 26, (p) => sa.receive(p));
+  const sa = new RollbackSession({ world: A.w, fighters: A.P, me: 0, send: (p) => wa.send(p), onDesync: (f) => desync.push(f) });
+  const sb = new RollbackSession({ world: B.w, fighters: B.P, me: 1, send: (p) => wb.send(p), onDesync: (f) => desync.push(f) });
+  const pa = player(31, A.P[0], A.P[1]), pb = player(32, B.P[1], B.P[0]);
+  const step = () => { wa.advance(TICK); wb.advance(TICK); sa.tick(pa()); sb.tick(pb()); sa.takeEvents(); sb.takeEvents(); };
+  const until = (done) => { for (let t = 0; t < 64 * 30 && !done(); t++) step(); };
+  until(() => A.w.duels[0].state === 'fight' && B.w.duels[0].state === 'fight');
+  const firstRoundOf = (g) => `${g.w.duels[0].round}/${JSON.stringify(g.w.duels[0].results)}`, began = firstRoundOf(A);
+  sa.setLoadout({ character: 'pure', sword: 'foil', look: [1, 2] });
+  sb.setLoadout({ character: 'vanguard', sword: 'jian' });
+  for (let t = 0; t < 64; t++) step();
+  check(firstRoundOf(A) === began && A.P[0].character === 'knight' && A.P[1].character === 'ryoku' && B.P[0].character === 'knight' && B.P[1].character === 'ryoku', `a second after asking, mid set, nobody has changed: ${A.P.map((p) => p.character)}, ${B.P.map((p) => p.character)}`);
+  const changed = (g) => g.P[0].character === 'pure' && g.P[1].character === 'vanguard';
+  until(() => changed(A) && changed(B));
+  check(changed(A) && changed(B), `after the set both peers show the new fighters: ${A.P.map((p) => p.character)}, ${B.P.map((p) => p.character)}`);
+  check(A.P[0].sword === 'foil' && B.P[0].sword === 'foil' && A.P[1].sword === 'jian' && B.P[1].sword === 'jian', `and their swords: ${A.P.map((p) => p.sword)}, ${B.P.map((p) => p.sword)}`);
+  check(String(A.P[0].look) === '1,2' && String(B.P[0].look) === '1,2', `and what they wear: ${A.P[0].look}, ${B.P[0].look}`);
+  // whichever set the change landed in, the next one has to run from it as well
+  for (let t = 0; t < 64 * 20; t++) step();
+  check(!sa.loadouts[0].size && !sb.loadouts[1].size, 'a delivered loadout stops being sent');
+  let compared = 0, differ = 0;
+  for (const [k, h] of sa.hashes) if (sb.hashes.has(k)) { compared++; if (sb.hashes.get(k) !== h) differ++; }
+  check(!desync.length && compared > 20 && differ === 0, `20% loss, across several sets: ${compared} state hashes agree${differ ? `, ${differ} DIFFER` : ''}${desync.length ? `, desync at ${desync[0]}` : ''}, ${A.w.duels[0].round} rounds into a set`);
+}
+
 // --- 5. the budget: the deepest rewind has to fit in a tick
 {
   const { w, P } = match(), pa = player(1, P[0], P[1]), pb = player(2, P[1], P[0]);

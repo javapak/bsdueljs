@@ -48,13 +48,14 @@ export async function startP2PMatch({ relay, room, bsp, mapBytes, read, hello, i
 
   // Both fighters from what each said about themselves, in seat order, the same on both sides
   const sides = peer.seat === 0 ? [hello, peer.other] : [peer.other, hello];
+  // What a fighter wears, from what a peer said: at the start, and again whenever one changes it for the next set
+  const dress = (h) => {
+    const character = data.characters[h?.character] ? h.character : 'knight', item = data.swordItems.find((x) => x.id === h?.item);
+    return { character, look: Array.isArray(h?.look) ? h.look : data.defaultLook[character], pickColor: h?.color ?? null, ...(item ? { sword: item.type, swordItem: item.id } : {}) };
+  };
   const P = sides.map((h, i) => {
-    const character = data.characters[h?.character] ? h.character : 'knight';
-    const p = new Player(i + 1, String(h?.name || `Player ${i + 1}`).slice(0, 24), character);
-    const item = data.swordItems.find((x) => x.id === h?.item);
-    if (item) { p.sword = item.type; p.swordItem = item.id; }
-    p.look = Array.isArray(h?.look) ? h.look : data.defaultLook[character];
-    p.pickColor = h?.color ?? null;
+    const kit = dress(h), p = new Player(i + 1, String(h?.name || `Player ${i + 1}`).slice(0, 24), kit.character);
+    Object.assign(p, kit);
     p.options = { gae: !!h?.options?.gae, sde: !!h?.options?.sde, ibt: Number.isFinite(h?.options?.ibt) ? Math.max(0, Math.min(2, h.options.ibt)) : 0.33 };
     return p;
   });
@@ -62,7 +63,7 @@ export async function startP2PMatch({ relay, room, bsp, mapBytes, read, hello, i
   world.duels[0].seat(P);
   const me = peer.seat, myId = P[me].id;
   const session = new RollbackSession({
-    world, fighters: P, me, inputDelay, maxRollback,
+    world, fighters: P, me, inputDelay, maxRollback, dress,
     // what the other player's frames start from, so each can choose their own
     remoteDelay: Number.isInteger(peer.other?.delay) ? Math.max(0, Math.min(8, peer.other.delay)) : 2,
     send: (p) => peer.send(encodePacket(p)),
